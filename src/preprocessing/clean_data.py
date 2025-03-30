@@ -2,68 +2,77 @@ import pandas as pd
 import re
 import nltk
 from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
-# from db_connection import get_db_url # Uncomment this line if you add it to extraPaths in a json file
-from src.database.db_connection import get_db_url
+import os
+import sys
 from sqlalchemy import create_engine
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-# Download stopwords if not already available
+import importlib
+import src.database.store_data
+import src.database.db_connection
+
+from data_augmentation import apply_data_augmentation
+from src.database.db_connection import get_db_url
+from src.database.store_data import store_data
+
+# Reload modules to ensure the latest changes are applied
+importlib.reload(src.database.store_data)
+importlib.reload(src.database.db_connection)
+
+# Download NLTK data files
 nltk.download("stopwords")
-nltk.download("punkt")
+stop_words = set(stopwords.words("english"))
 
-def clean_text(text: str) -> str:
-    """
-    Cleans a given text by removing special characters, URLs, and stopwords.
-
-    :param text: Raw text from Reddit post
-    :return: Cleaned text
-    """
-    if not isinstance(text, str) or text.strip() == "": # Check if text is empty
-        return ""
-
-    # Convert to lowercase
+def clean_text(text):
+    """Clean text by converting to lowercase, removing special characters, and stopwords."""
     text = text.lower()
+    text = re.sub(r"[^a-zA-Z\s]", "", text)  # Remove special characters
+    text = re.sub(r"\s+", " ", text).strip()  # Remove extra spaces
+    words = text.split() # Tokenize text
+    words = [word for word in words if word not in stop_words] # Remove stopwords
+    return " ".join(words) # Join words back into a sentence
 
-    # Remove URLs
-    text = re.sub(r"http\S+|www\S+|https\S+", "", text, flags=re.MULTILINE)
-
-    # Remove special characters and numbers
-    text = re.sub(r"[^a-zA-Z\s]", "", text)
-
-    # Tokenization
-    words = word_tokenize(text)
-
-    # Remove stopwords
-    stop_words = set(stopwords.words("english"))
-    filtered_words = [word for word in words if word not in stop_words]
-
-    return " ".join(filtered_words)
-
-def fetch_and_clean_data():
-    """
-    Fetches raw data from the database, cleans the text, and returns a processed DataFrame.
-    
-    :return: Cleaned DataFrame
-    """
+def load_data_from_db():
+    """Carga los datos de reddit_posts desde la base de datos."""
     db_url = get_db_url()
     engine = create_engine(db_url)
+    query = "SELECT id, text FROM reddit_posts"  # Query to fetch data from reddit_posts table
+    
+    try:
+        df = pd.read_sql(query, con=engine)
+        if df.empty:
+            print("⚠️ There are not data in the table 'reddit_posts'.")
+            return None
+        df["label"] = "neutral"  # Add a default label for all posts
+        return df
+    except Exception as e:
+        print(f"❌ Error loading data from database: {e}")
+        return None
 
-    query = "SELECT * FROM reddit_posts"
-    df = pd.read_sql(query, engine)
+def clean_data(df):
+    """Cleans and augments dataset."""
+    augmented_rows = []
+    
+    for _, row in df.iterrows(): # Iterate over DataFrame rows
+        original_text = row["text"]
+        cleaned_text = clean_text(original_text)
 
-    print(f"🔍 Retrieved {len(df)} posts from the database.")
+        augmented_texts = apply_data_augmentation(cleaned_text)
 
-    # Remove duplicates and null values
-    df.drop_duplicates(subset=["id"], keep="first", inplace=True)
-    df.dropna(subset=["text"], inplace=True)
+        for text in augmented_texts:
+            augmented_rows.append({"text": text, "label": row["label"]}) # Add augmented row
 
-    # Clean text column
-    df["clean_text"] = df["text"].apply(clean_text)
-
-    print(f"✅ Cleaned {len(df)} posts.")
-
-    return df
+    return pd.DataFrame(augmented_rows)
 
 if __name__ == "__main__":
-    cleaned_data = fetch_and_clean_data()
-    print(cleaned_data.head())  # Display first 5 cleaned posts
+    # df = pd.read_csv("new_posts.csv")    # Read data from CSV file
+    df = load_data_from_db()  # Load data from database
+
+    if df is not None:
+        clean_df = clean_data(df)
+        store_data(clean_df, table_name="cleaned_data")  # Store cleaned data in the database
+        print("✅ Cleaned data stored in the database successfully!")
+    else:
+        print("❌ It could not clean and storage data.")
+
+
