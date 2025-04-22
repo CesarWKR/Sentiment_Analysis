@@ -2,6 +2,8 @@ import os
 import psycopg2  # For PostgreSQL
 import mysql.connector  # For MySQL
 from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 
 # Load environment variables
 load_dotenv()
@@ -15,8 +17,10 @@ DB_NAME = os.environ["DB_NAME"]
 DB_USER = os.environ["DB_USER"]  
 DB_PASSWORD = os.environ["DB_PASSWORD"]  # If it doesn't exist in .env, it will raise an KeyError
 
-print(f"DB_TYPE: {DB_TYPE}")  # Depuración
-def get_db_url():
+print(f"DB_TYPE: {DB_TYPE}")  # Debugging line to check the DB_TYPE
+
+
+def get_db_url() -> str:
     """
     Constructs a database URL for SQLAlchemy based on the environment variables.
     
@@ -30,44 +34,36 @@ def get_db_url():
         raise ValueError("❌ Unsupported database type. Use 'postgres' or 'mysql'.")
 
 
-def connect_to_db():
+def connect_to_db() -> Engine:
     """
     Establishes a connection to the database (PostgreSQL or MySQL).
     
     :return: Database connection object
     """
+    if getattr(connect_to_db, "_connected_once", False): # Check if already connected
+        return connect_to_db._engine  # Return the existing engine if already connected
+    
     try:
-        if DB_TYPE == "postgres":
-            conn = psycopg2.connect(
-                host=DB_HOST,
-                port=DB_PORT,
-                dbname=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD
-            )
-            print("✅ Connected to PostgreSQL successfully!")
-        
-        elif DB_TYPE == "mysql":
-            conn = mysql.connector.connect(
-                host=DB_HOST,
-                port=DB_PORT,
-                database=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD
-            )
-            print("✅ Connected to MySQL successfully!")
-        
-        else:
-            raise ValueError("❌ Unsupported database type. Use 'postgres' or 'mysql'.")
-        
-        return conn
+        db_url = get_db_url()
+        engine = create_engine(db_url)
+
+        connect_to_db._engine = engine # Store the engine in the function's attribute for reuse
+        connect_to_db._connected_once = True    # Set the flag to True to indicate that the connection has been established
+
+        print(f"✅ Connected to the {DB_TYPE.upper()} database successfully with SQLAlchemy!")
+        return engine # Return the SQLAlchemy engine object for further use
 
     except Exception as e:
-        print(f"❌ Database connection failed: {e}")
+        print(f"❌ Error creating SQLAlchemy engine: {e}")
         return None
 
+
 if __name__ == "__main__":
-    conn = connect_to_db()
-    if conn:
-        conn.close()
-        print("✅ Database connection closed.")
+    engine = connect_to_db()
+    if engine:
+        try:
+            with engine.connect() as conn:
+                conn.execute("SELECT 1")  # Test the connection
+                print("✅ Connection test successful!")
+        except Exception as e:
+            print(f"❌ Error testing connection: {e}")

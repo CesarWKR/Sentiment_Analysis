@@ -2,7 +2,9 @@ import random
 import nltk
 from nltk.corpus import wordnet
 
-nltk.download("wordnet")
+# Download resources from nltk only when the script is executed directly
+if __name__ == "__main__":
+    nltk.download("wordnet")
 
 def synonym_replacement(text, num_replacements=1):
     """
@@ -19,27 +21,19 @@ def synonym_replacement(text, num_replacements=1):
         return text
 
     new_words = words.copy()
+    words_with_synonyms = [word for word in words if wordnet.synsets(word)]  # Filter words with synonyms
+
+    if not words_with_synonyms:  # If no words have synonyms, return the original text
+        return text
     
-    # for _ in range(num_replacements):
-    #     word_idx = random.randint(0, len(words) - 1)
-    #     synonyms = wordnet.synsets(words[word_idx])
-        
-    #     if synonyms:
-    #         synonym = synonyms[0].lemmas()[0].name()  # Get the first synonym
-    #         new_words[word_idx] = synonym.replace("_", " ")  # Replace underscores if needed
-    
-    # return " ".join(new_words)
 
     for _ in range(num_replacements):
-        if not new_words:  # If all words have been replaced, break the loop
-            break
-
         word_idx = random.randint(0, len(new_words) - 1)  # Randomly select an index
         synonyms = wordnet.synsets(new_words[word_idx])   # Get synonyms for the selected word
     
         if synonyms:
             synonym = synonyms[0].lemmas()[0].name()  # Get the first synonym
-            new_words[word_idx] = synonym.replace("_", " ")  # Replace underscores if needed
+            new_words[word_idx] = synonym.replace("_", " ")  # Replace in text
 
     return " ".join(new_words)
 
@@ -53,7 +47,12 @@ def word_dropout(text, dropout_prob=0.2):
     """
     words = text.split()
     new_words = [word for word in words if random.random() > dropout_prob]
-    return " ".join(new_words) if new_words else text  # Ensure the text is not empty
+
+    if not new_words:  # If all words are dropped, return a random word from the original text
+        return random.choice(words)
+    
+    #return " ".join(new_words) if new_words else text  # Ensure the text is not empty
+    return " ".join(new_words)  # Return the modified text
 
 def apply_data_augmentation(text):
     """
@@ -71,9 +70,13 @@ def apply_data_augmentation(text):
     augmented_texts = [text]  # Include the original text
 
     # Apply synonym replacement
-    augmented_texts.append(synonym_replacement(text))
+    synonym_text = synonym_replacement(text)
+    if synonym_text != text:
+        augmented_texts.append(synonym_text)
 
     # Apply word dropout
-    augmented_texts.append(word_dropout(text))
-
+    dropout_text = word_dropout(text)
+    if dropout_text != text:
+        augmented_texts.append(dropout_text)
+    
     return augmented_texts
