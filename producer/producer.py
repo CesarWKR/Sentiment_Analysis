@@ -1,7 +1,7 @@
 from kafka import KafkaProducer
 import json
 import time
-from src.api.fetch_reddit import fetch_reddit_posts  
+from src.api.fetch_reddit import fetch_reddit_posts, TOTAL_LIMIT  
 
 # KAFKA_BROKER = "kafka:9092"  # Docker container name and port
 KAFKA_BROKER = "localhost:9092"  # Default localhost
@@ -12,7 +12,7 @@ producer = KafkaProducer(
     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
 )
 
-def produce_messages(max_messages=2000):
+def produce_messages(max_messages=TOTAL_LIMIT):
     """ Change max_messages depending on the number of posts you want to send, must be equal to TOTAL_LIMIT in fetch_reddit.py """
     sent = 0
     while sent < max_messages:

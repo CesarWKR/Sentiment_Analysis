@@ -14,7 +14,6 @@ import src.database.store_data
 import src.database.db_connection
 
 from src.preprocessing.data_augmentation import apply_data_augmentation
-from src.database.db_connection import connect_to_db
 from src.database.store_data import store_data
 
 # Reload modules to ensure the latest changes are applied
@@ -22,7 +21,7 @@ importlib.reload(src.database.store_data)
 importlib.reload(src.database.db_connection)
 
 # Download NLTK data files
-nltk.download("stopwords")
+nltk.download("stopwords", quiet=True)
 stop_words = set(stopwords.words("english"))  # English stopwords set
 
 # Kafka settings
@@ -35,6 +34,15 @@ def clean_text(text):
     text = text.lower()
     text = re.sub(r"[^a-zA-Z\s]", "", text)  # Remove special characters
     text = re.sub(r"\s+", " ", text).strip()  # Remove extra spaces
+
+    # Remove emojis
+    text = re.sub(r'[\U0001F600-\U0001F64F]', '', text, flags=re.UNICODE)  # Removes most common emojis
+    text = re.sub(r'[\U0001F300-\U0001F5FF]', '', text, flags=re.UNICODE)  # Removes symbols & pictographs
+    text = re.sub(r'[\U0001F680-\U0001F6FF]', '', text, flags=re.UNICODE)  # Removes transport & map symbols
+    text = re.sub(r'[\U0001F1E0-\U0001F1FF]', '', text, flags=re.UNICODE)  # Removes flags (iOS)
+    text = re.sub(r'[\u2600-\u26FF\u2700-\u27BF]', '', text, flags=re.UNICODE) # Remove Miscellaneous Symbols and Dingbats
+    text = re.sub(r'(\u00a9|\u00ae|[\u25A0-\u25FF]|\u263a|\u2605|\u2606|\u2668|\u2665|\u2660|\u2764|\u2744|\u2B50|\u2B55)', '', text, flags=re.UNICODE) # Remove more symbols
+
     words = text.split() # Tokenize text
     words = [word.lower() for word in words if word.lower() not in stop_words] # Remove stopwords
     return " ".join(words) # Join words back into a sentence
@@ -63,35 +71,45 @@ def process_and_store_data(batch_messages):
             cleaned_text = clean_text(text)
             
             # Apply data augmentation
-            augmented_texts = apply_data_augmentation(cleaned_text)
+            augmented_data = apply_data_augmentation(cleaned_text)
 
-            # Create a DataFrame with the cleaned and augmented texts
-            processed_data = [{"text": txt, "label": label} for txt in augmented_texts] # Create a list of dictionaries for each augmented text and provide them the corresponding label
+            # Create a DataFrame with the cleaned and augmented data
+            #processed_data = [{"text": txt, "label": label} for txt in augmented_data] # Create a list of dictionaries for each augmented text and provide them the corresponding label
 
+            processed_data = []
+            for aug_text, aug_type in augmented_data: # Unpack the tuple into text and augmentation type
+                processed_data.append({
+                    "text": aug_text,
+                    "label": label,
+                    "is_augmented": aug_type is not None,
+                    "augmentation_type": aug_type
+                })
             all_processed_data.extend(processed_data)  # Add to the list of all processed data
 
             # Convert to DataFrame and store in DB
             # df_cleaned = pd.DataFrame(processed_data) # Create DataFrame from processed data
             
         except Exception as e:
-            # print(f"❌ Error processing message: {e}")
+            print(f"❌ Error processing message: {e}")
             error_count += 1 # Increment error count
-
 
     if all_processed_data: # Check if there are any processed data to store
         df_cleaned = pd.DataFrame(all_processed_data) # Create DataFrame from all processed data
         store_data(df_cleaned, table_name="cleaned_data") # Store all processed data in DB
         # print(f"✅ Successfully processed and stored {len(all_processed_data)} entries in batch")  # Log the number of entries processed
     
-    
+    count_errors = 0
     if error_count > 0: # Check if there were any errors during processing
-        print(f"❌ Skipped {error_count} messages due to processing errors") # Log the number of errors
+        count_errors += error_count # Increment error count
+        # print(f"❌ Skipped {error_count} messages due to processing errors") # Log the number of errors
+        if count_errors >= 1000: # If error count exceeds 1000, log a warning
+            print(f"❌ Warning: {count_errors} messages failed to process in this batch due to processing errors") # Log the warning
+        
     elif not all_processed_data:
         print("⚠️ No valid data to store in this batch")
         
-    
 
-def consume_messages(batch_size=1000):
+def consume_messages(batch_size=1000):  
     """Consumes messages from Kafka topic and processes them."""
     consumer = KafkaConsumer(
         KAFKA_TOPIC,   # Fetch messages from raw data topic

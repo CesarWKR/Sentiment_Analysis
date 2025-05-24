@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 import sqlite3
 from transformers import BertTokenizer, BertForSequenceClassification
+from transformers import RobertaTokenizer, RobertaForSequenceClassification
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report
 import seaborn as sns
@@ -11,7 +12,6 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 from src.database.db_connection import connect_to_db
 from src.database.store_data import store_results_in_db
-from sqlalchemy import create_engine
 from sqlalchemy import text as sql_text
 
 # Check if GPU is available
@@ -27,8 +27,10 @@ if not os.path.exists(model_path):
     raise FileNotFoundError(f"❌ Model path '{model_path}' not found. Train the model first!")
 
 # Load pre-trained model and tokenizer
-tokenizer = BertTokenizer.from_pretrained(model_path)
-model = BertForSequenceClassification.from_pretrained(model_path).to(device)
+# tokenizer = BertTokenizer.from_pretrained(model_path)
+# model = BertForSequenceClassification.from_pretrained(model_path).to(device)
+tokenizer = RobertaTokenizer.from_pretrained(model_path)
+model = RobertaForSequenceClassification.from_pretrained(model_path).to(device)
 model.eval()  # Set model to evaluation mode
 
 # Load validation data from database connection
@@ -66,7 +68,7 @@ def predict_sentiment(text):
         return None  # Handle empty input gracefully
 
     encoding = tokenizer(
-        text, truncation=True, padding="max_length", max_length=512, return_tensors="pt"
+        text, truncation=True, padding="max_length", max_length=256, return_tensors="pt"
     )
 
     input_ids = encoding["input_ids"].to(device)
@@ -149,41 +151,6 @@ def evaluate_model():
     print(classification_report(filtered_true_labels, filtered_pred_labels, target_names=LABELS, zero_division=0)) # Print classification report
 
 
-# def store_results_in_db(results_to_store):
-#     """Stores validation results in the database."""
-#     with engine.connect() as conn:
-#         # Ensure the validation_results table exists
-#         conn.execute(text("""
-#             CREATE TABLE IF NOT EXISTS validation_results (
-#                 id SERIAL PRIMARY KEY,
-#                 text TEXT NOT NULL,
-#                 predicted_label VARCHAR(50) NOT NULL
-#             )
-#         """))
-    
-#         # val_texts = validation_data["text"].tolist()
-#         # val_predictions = [LABELS[predict_sentiment(text)] for text in val_texts if predict_sentiment(text) is not None]  # Predict sentiment for validation texts
-
-#         # val_predictions = []
-#         # valid_texts = []
-
-#         # for text in val_texts:
-#         #     pred_index = predict_sentiment(text)
-#         #     if pred_index is not None:
-#         #         val_predictions.append(LABELS[pred_index])
-#         #         valid_texts.append(text)
-
-    
-#         # Insert predictions into the database
-#         # for text_val, prediction in zip(val_texts, val_predictions):
-#         for text_val, prediction in results_to_store: # Iterate over the results to store
-#             conn.execute(text("""
-#                 INSERT INTO validation_results (text, predicted_label) 
-#                 VALUES (:text, :pred)
-#             """), {"text": text_val, "pred": prediction})
-
-#     print("✅ Validation results stored in database.")
-
 
 def manual_prediction():
     """Allows the user to input text and get a sentiment prediction."""
@@ -214,6 +181,6 @@ def run_validation_and_store_results():
     store_results_in_db(engine, results_to_store) # Store results in the database
 
 if __name__ == "__main__":
-    run_validation_and_store_results()  # Run validation and store results in DB
+    # run_validation_and_store_results()  # Run validation and store results in DB
     evaluate_model()  # Run model evaluation
-    manual_prediction()  # Allow user to input texts
+    # manual_prediction()  # Allow user to input texts
