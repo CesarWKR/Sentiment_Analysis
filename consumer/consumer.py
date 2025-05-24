@@ -50,12 +50,6 @@ def consume_messages():
     total_consumed = 0
     for message in consumer:
         try:
-            #print(f"🔍 Message type: {type(message)}")
-            # print(f"📨 Raw message: {message}")
-            # print(f"📦 Message value: {message.value}")
-            # value = message.value if hasattr(message, 'value') else message
-            # cleaned_data = process_and_store_data(message.value)  # Call cleaning function with the message value
-            # cleaned_data = process_and_store_data(value)
             raw_data = message.value # Get the raw data from the message
             store_data(raw_data, table_name="reddit_posts")  # Store raw data in the database
             cleaned_data = process_and_store_data([message])  # Call cleaning function with the list message value
@@ -63,13 +57,11 @@ def consume_messages():
 
             if cleaned_data:  # Check if cleaned_data is not empty
                 producer.send(TOPIC_OUTPUT, cleaned_data)  # Send cleaned data to output topic
-                # print(f"✅ Message processed and sent to {TOPIC_OUTPUT}: {cleaned_data}")
-                # print(f"✅ Message processed and sent to {TOPIC_OUTPUT}")
         except Exception as e:
             logging.error(f"❌ Error processing message: {e}")
         
         total_consumed += 1
-        if total_consumed % 100 == 0:
+        if total_consumed % 10000 == 0:  # Log every 10000 messages
             logging.info(f"🔄 Total consumed mesages: {total_consumed}")    
 
 if __name__ == "__main__":
