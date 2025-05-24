@@ -47,13 +47,21 @@ class CleanedData(Base):
     label = Column(String(50), nullable=False)
 
 SUBREDDIT_LABELS = {
+    # Negative sentiment
     "depression": "Negative",
     "anxiety": "Negative",
     "mentalhealth": "Negative",
     "bipolarreddit": "Negative",
     "SuicideWatch": "Negative",
-    "offmychest": "Negative",
+    "ptsd": "Negative",
+    "selfharm": "Negative",
+    "breakups": "Negative",
+    "relationships": "Negative",
+    "dating_advice": "Negative",
+    "sad": "Negative",
+    "lonely": "Negative",
 
+    # Positive sentiment
     "GetMotivated": "Positive",
     "DecidingToBeBetter": "Positive",
     "selfimprovement": "Positive",
@@ -61,21 +69,35 @@ SUBREDDIT_LABELS = {
     "humansbeingbros": "Positive",
     "MadeMeSmile": "Positive",
     "UpliftingNews": "Positive",
+    "KindVoice": "Positive",
+    "WholesomeMemes": "Positive",
     "funny": "Positive",
-    "upliftingnews": "Positive",
+    "memes": "Positive",
+    "aww": "Positive",
+    "Eyebleach": "Positive",
+    "UnexpectedlyWholesome": "Positive",
 
+    # Neutral sentiment
     "Psychology": "Neutral",
     "Emotions": "Neutral",
     "CasualConversation": "Neutral",
     "offmychest": "Neutral",
     "TrueOffMyChest": "Neutral",
+    "confession": "Neutral",
+    "Vent": "Neutral",
     "Advice": "Neutral",
     "LifeProTips": "Neutral",
     "NoStupidQuestions": "Neutral",
+    "AskReddit": "Neutral",
+    "AskWomen": "Neutral",
+    "AskMen": "Neutral",
+    "ChangeMyView": "Neutral",
+    "TrueAskReddit": "Neutral",
+    "TooAfraidToAsk": "Neutral",
     "unpopularopinion": "Neutral",
-    "politics": "Neutral",
-    "worldnews": "Neutral",
-    "AskReddit": "Neutral"
+    "TodayILearned": "Neutral",
+    "philosophy": "Neutral",
+    "science": "Neutral"
 }
 
 vader_analyzer = SentimentIntensityAnalyzer()
@@ -119,13 +141,13 @@ def store_reddit_posts(data: pd.DataFrame):
     try:
         if isinstance(data, pd.DataFrame): # Check if data is a DataFrame
             for _, row in data.iterrows(): # Iterate over each row in the DataFrame
-                if not row.get("id") or not row.get("title"):  # Check if 'id' and 'title' are present
-                    print("⚠️ Invalid data in row: missing 'id' or 'title'. Skipping...")
+                if not row.get("id") or not row.get("text"):  # Check if 'id' and 'text' are present
+                    print("⚠️ Invalid data in row: missing 'id' or 'text'. Skipping...")
                     continue
 
                 post = RedditPost(
                     id=row["id"],
-                    title=row["title"],
+                    title=row["title"],   
                     score=row["score"],
                     url=row["url"],
                     num_comments=row["num_comments"],
@@ -136,13 +158,13 @@ def store_reddit_posts(data: pd.DataFrame):
                 session.merge(post)  # Merge the post into the session to avoid duplicates
 
         elif isinstance(data, dict):   # Check if data is a dictionary
-            if not data.get("id") or not data.get("title"):  
-                print("⚠️ Invalid data: missing 'id' or 'title'. Skipping...")
+            if not data.get("id") or not data.get("text"):  
+                print("⚠️ Invalid data: missing 'id' or 'text'. Skipping...")
                 return False
 
             post = RedditPost(
                 id=data["id"],
-                title=data["title"],
+                title=data["title"],    
                 score=data["score"],
                 url=data["url"],
                 num_comments=data["num_comments"],
@@ -191,7 +213,7 @@ def store_cleaned_data(data: pd.DataFrame):
 
         elif isinstance(data, dict): # Check if data is a dictionary
             if not data.get("text") or not data.get("label"):
-                print("⚠️ Invalid cleaned data: missing 'text' or 'label'. Skipping...")
+                # print("⚠️ Invalid cleaned data: missing 'text' or 'label'. Skipping...")
                 return False
 
             cleaned_entry = CleanedData(
@@ -269,8 +291,8 @@ def consume_from_kafka():
         else:              # If data storage failed
             failed += 1    # Increment failed count
 
-        # Displays summary every 2000 messages to avoid overloading the terminal
-        if total_messages % 2000 == 0: # Print summary every 2000 messages
+        # Displays summary every 10000 messages to avoid overloading the terminal
+        if total_messages % 10000 == 0: # Print summary every 10000 messages
             print(f"📊 Processed: {total_messages}, stored: {stored}, failed: {failed}")
 
     # Final summary after processing all messages
