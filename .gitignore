@@ -1,0 +1,38 @@
+# Ignore virtual environments
+venv/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore environment variables and sensitive config
+.env
+
+# Ignore cache files and database files
+*.log
+*.sqlite
+
+# Ignore Visual Studio Code settings
+.vscode/
+
+# Ignore development and test scripts
+GPU_test.py
+Model_test.py
+fetch_reddit_api.py
+store_data_api.py
+clean_data_api.py
+test_model_api.py
+data_augmentation_api.py
+fine_tune_bert_api.py
+main_original.py
+main_modified_complete.py
+db_connection copy.py
+
+# Ignore Docker-specific files
+.dockerignore
+
+# Bigquery files
+bigquery_loader/ 
+errors.txt
+
