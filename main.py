@@ -110,10 +110,10 @@ def main():
     if latest_model_path:
         logging.info(f"✅ Found existing model: {latest_model_path}. Skipping training.")
     elif cleaned_data_exists(): # Check if cleaned data exists in the database
-        logging.info("🧠 No existing model found. Fine-tuning BERT model...")
-        train_model()
+        logging.info("🧠 No existing model found. Fine-tuning RoBERTa model...")
+        train_model(data_source="both") # Choose the data source for training (raw, cleaned, or both)
         update_latest_model()
-        logging.info("✅ BERT model trained and latest model updated.")
+        logging.info("✅ RoBERTa model trained and latest model updated.")
     else:
         logging.warning("⚠️ No data available for training. Skipping model training.")
 
