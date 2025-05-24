@@ -1,0 +1,133 @@
+# version: '3.8'
+
+services:
+  # Zookeeper service (required by Kafka)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+
+  # Kafka broker service
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092  # Use this for Docker networking
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092  # Use this for local development
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+
+# PostgreSQL database service
+  postgres:
+    image: postgres:latest
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+
+# pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4
+    depends_on:
+      - postgres
+    ports:
+      - "5050:80"
+    env_file:
+      - .env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+
+# Producer service to send messages to Kafka
+  producer:
+    build: ./producer
+    depends_on:
+      - kafka
+    env_file:
+      - .env
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      REDDIT_API_KEY: ${REDDIT_CLIENT_SECRET}
+  
+
+  # Consumer service to read messages from Kafka and store in PostgreSQL
+  consumer:
+    build: ./consumer
+    depends_on:
+      - kafka
+      - postgres
+    env_file:
+      - .env
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+
+
+ # Optional: Loader service to send data to BigQuery (currently commented)
+  # bigquery_loader:
+  #   build: ./bigquery_loader
+  #   depends_on:
+  #     - consumer
+  #   environment:
+  #     GOOGLE_APPLICATION_CREDENTIALS: /secrets/bq_credentials.json
+  #     PROJECT_ID: ${PROJECT_ID}
+  #     DATASET_ID: ${DATASET_ID}
+  #   volumes:
+  #     - ./secrets:/secrets
+
+
+# Trainer service for model training
+  trainer:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+      args:
+        USE_GPU: ${USE_GPU}    # Pass GPU usage as build argument
+    depends_on:
+      - kafka
+      - postgres
+    env_file:
+      - .env
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - .:/app
+    command: ["python", "main.py"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+
+
