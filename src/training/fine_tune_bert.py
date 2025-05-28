@@ -196,16 +196,17 @@ def freeze_roberta_layers(model, num_layers_to_freeze=8):
         for param in model.roberta.encoder.layer[i].parameters():  # Freeze the parameters of the first layers
             param.requires_grad = False  # Set requires_grad to False freeze selected layers
     print(f"🧊 Frozen first {num_layers_to_freeze} RoBERTa layers.")
+    return num_layers_to_freeze
 
 
-def unfreeze_roberta_layers(model, num_layers_to_unfreeze=1):
+def unfreeze_roberta_layers(model, layer_index: int):
     """
     Unfreeze the last ones num_layers_to_unfreeze layers from the Roberta encoder.
     """
-    for i in range(11, 11 - num_layers_to_unfreeze, -1): # Unfreeze the last layers
-        for param in model.roberta.encoder.layer[i].parameters(): 
-            param.requires_grad = True
-    print(f"🔓 Unfrozen last {num_layers_to_unfreeze} layers of RoBERTa.") 
+    # for i in range(11, 11 - num_layers_to_unfreeze, -1): # Unfreeze the last layers
+    for param in model.roberta.encoder.layer[layer_index].parameters(): 
+        param.requires_grad = True
+    print(f"🔓 Unfrozen RoBERTa layer {layer_index}.") 
 
 
 def get_focal_alpha(labels, num_classes):
@@ -214,15 +215,23 @@ def get_focal_alpha(labels, num_classes):
     # print(f"⚖️  Alpha for Focal Loss: {alpha}")
     return alpha
 
-def analyze_errors(texts, labels, predictions, label_map={0: "Negative", 1: "Neutral", 2: "Positive"}):
+
+def print_classification_report(labels, predictions, label_map={0: "Negative", 1: "Neutral", 2: "Positive"}):
     print("Classification Report:\n")
     print(classification_report(labels, predictions, target_names=label_map.values()))
 
-    print("\nWrong classificated Examples:")
-    for i, (text, true_label, pred_label) in enumerate(zip(texts, labels, predictions)):
+
+def show_misclassified_examples(texts, labels, predictions, label_map={0: "Negative", 1: "Neutral", 2: "Positive"}, max_errors=3):
+    print(f"\n🔍 Wrongly Classified Examples (showing up to {max_errors}):")
+    errors_shown = 0
+    for text, true_label, pred_label in zip(texts, labels, predictions):
         if true_label != pred_label:
             print(f"\n🟥 Text: {text}")
             print(f"   Real: {label_map[true_label]}, Predicted: {label_map[pred_label]}")
+            errors_shown += 1
+            if errors_shown >= max_errors:
+                break
+
 
 def train_model(data_source="cleaned"):
     """Fine-tunes BERT for sentiment analysis."""
@@ -236,9 +245,8 @@ def train_model(data_source="cleaned"):
         df["text"], df["label"], test_size=0.2, random_state=42, stratify=df["label"]
     )
 
-
     # Save validation data (20% of data) to the database
-    save_validation_data(val_texts.tolist(), val_labels.tolist())
+    # save_validation_data(val_texts.tolist(), val_labels.tolist())
 
     train_dataset = RedditDataset(train_texts.tolist(), train_labels.tolist(), tokenizer)
     val_dataset = RedditDataset(val_texts.tolist(), val_labels.tolist(), tokenizer)
@@ -249,15 +257,7 @@ def train_model(data_source="cleaned"):
     val_loader = DataLoader(val_dataset, batch_size=batch_size, pin_memory=True) # No shuffle for validation
 
     num_classes = 3  # Number of classes
-    # class_counts = torch.bincount(torch.tensor(train_labels.tolist(), dtype=torch.long), minlength=num_classes).float()
-
-    # class_weights = 1.0 / class_counts
-    # # manual_weights = torch.tensor([1.2, 0.7, 1.6], dtype=torch.float).to(device)  # Manual weights for Negative, Neutral, Positive classes
-    # class_weights = class_weights / class_weights.sum()
-    # class_weights = class_weights.to(device)
-
-    class_weights = get_class_weights(train_labels, num_classes)
-    criterion = torch.CrossEntropyLoss(weight=class_weights.to(device))
+    
 
     config = RobertaConfig.from_pretrained(
         "roberta-base",
@@ -267,31 +267,38 @@ def train_model(data_source="cleaned"):
     )
     model = RobertaForSequenceClassification.from_pretrained("roberta-base", config=config)
 
-    freeze_roberta_layers(model)  # Freezing RoBERTa layers initially
-    num_layers_to_unfreeze = 3  # Number of layers to unfreeze initially
-    
     model.to(device)  # Move model to GPU if available
 
+    total_roberta_layers = 12  # Total number of RoBERTa layers
+    num_layers_to_freeze = freeze_roberta_layers(model, num_layers_to_freeze=8)  # Freeze the first 8 layers of RoBERTa
+
     # ======= Loss Function: You can switch between FocalLoss and CrossEntropy =======
-    use_focal = True  # Set to True to use Focal Loss, False for CrossEntropy
     alpha = get_focal_alpha(train_labels, num_classes=3)
-    # loss_fn = FocalLoss(alpha=alpha, gamma=2.0, reduction="mean") if use_focal else torch.nn.CrossEntropyLoss(weight=class_weights)
-    cross_entropy_loss = torch.nn.CrossEntropyLoss(weight=criterion)
+    class_weights = get_class_weights(train_labels, num_classes)
+    cross_entropy_loss = torch.nn.CrossEntropyLoss(weight=class_weights.to(device))  # CrossEntropyLoss with class weights
     focal_loss = FocalLoss(alpha=alpha, gamma=2.0, device=device)
 
+     # Group parameters for optimizer
+    no_decay = ['bias', 'LayerNorm.weight']  # Parameters that should not decay
+    optimizer_grouped_parameters = [
+        {
+            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay) and p.requires_grad],
+            "weight_decay": 0.01,
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay) and p.requires_grad],
+            "weight_decay": 0.0,
+        },
+    ]
 
-    # optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)  # AdamW optimizer with weight decay
-    #optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5, weight_decay=0.01)
-    optimizer = AdamW([
-        {"params": model.roberta.parameters(), "lr": 1e-5},
-        {"params": model.classifier.parameters(), "lr": 2e-5}
-    ])
+    optimizer = AdamW(optimizer_grouped_parameters, lr=2e-5) # Optimizer with grouped parameters
+
     num_epochs = 6  # Number of epochs for training
     total_steps = len(train_loader) * num_epochs // accumulation_steps  # Total training steps
     num_warmup_steps = int(0.1 * total_steps)  # Warmup steps for learning rate scheduler
     lr_scheduler = get_scheduler("linear", optimizer=optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=total_steps)
-
-    scaler = GradScaler("cuda")  # For mixed precision training
+    # scaler = GradScaler("cuda")  # For mixed precision training
+    scaler = GradScaler(enabled=torch.cuda.is_available())
 
     # Save model in fixed directory (no timestamp)
     model_path = "bert_sentiment_model"
@@ -306,29 +313,28 @@ def train_model(data_source="cleaned"):
     best_model_state_dict = None  # To save the best model state dict
     best_val_loss = float("inf")
 
+    final_texts_for_analysis = []
+    final_true_labels_for_analysis = []
+    final_preds_for_analysis = []
+
+    use_focal = True  # Set to True to use Focal Loss, False for CrossEntropy
 
     # Training loop
     for epoch in range(num_epochs):
         print(f"\n🔁 Epoch {epoch+1}/{num_epochs}")
 
-        if epoch >= 1:
+        if use_focal:  # Use Focal Loss from the first epoch or if use_focal is False use CrossEntropyLoss
             loss_fn = focal_loss  
             print("📌 Using Focal Loss")
             print(f"⚖️ Alpha for Focal Loss: {alpha}")
         else:
-            loss_fn = cross_entropy_loss
+            loss_fn = cross_entropy_loss # CrossEntropyLoss when use_focal is False
             print("📌 Using CrossEntropy Loss")
             print(f"⚖️ Class Weights: {class_weights}")
 
-        if epoch == 2: # Unfreeze layers after 5 epochs
-            unfreeze_roberta_layers(model, num_layers_to_unfreeze=num_layers_to_unfreeze)
-            optimizer = AdamW([
-                {"params": model.roberta.parameters(), "lr": 1e-5},
-                {"params": model.classifier.parameters(), "lr": 5e-5}
-            ], weight_decay=0.01)
-            lr_scheduler = get_scheduler("linear", optimizer=optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=total_steps)
-            scaler = GradScaler(enabled=torch.cuda.is_available())
-            print("🔓 Unfreezing layers and update optimizer.")
+        if epoch < num_layers_to_freeze:
+            layer_to_unfreeze = num_layers_to_freeze - 1 - epoch
+            unfreeze_roberta_layers(model, layer_index=layer_to_unfreeze)  # Unfreeze the last layers one by one
 
         # ======= Training =======
         model.train()
@@ -341,7 +347,6 @@ def train_model(data_source="cleaned"):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["label"].to(device)
-
 
             with autocast(device_type="cuda" if torch.cuda.is_available() else "cpu"):  # Mixed precision
                 outputs = model(input_ids, attention_mask=attention_mask)
@@ -361,7 +366,6 @@ def train_model(data_source="cleaned"):
 
         avg_train_loss = total_loss / len(train_loader)  # Average training loss
 
-
         # ======= Validation =======
         model.eval()
         all_preds = []
@@ -370,8 +374,6 @@ def train_model(data_source="cleaned"):
         texts_for_analysis = []      # Texts for error analysis
         true_labels_for_analysis = []  # True labels
         preds_for_analysis = []        # Predictions
-        y_true = [] # True labels
-        y_pred = [] # Model predictions
 
         with torch.no_grad():
             for batch in val_loader:
@@ -395,8 +397,10 @@ def train_model(data_source="cleaned"):
                 all_labels.extend(labels.cpu().numpy())  # Store true labels
                 all_preds.extend(preds.cpu().numpy())  # Store predictions
 
-            analyze_errors(texts_for_analysis, true_labels_for_analysis, preds_for_analysis)
-
+            # analyze_errors(texts_for_analysis, true_labels_for_analysis, preds_for_analysis)   # This print every epoch, so it is commented out
+            final_texts_for_analysis = texts_for_analysis
+            final_true_labels_for_analysis = true_labels_for_analysis
+            final_preds_for_analysis = preds_for_analysis
 
         val_acc = accuracy_score(all_labels, all_preds)
         val_f1 = f1_score(all_labels, all_preds, average="macro")
@@ -404,7 +408,8 @@ def train_model(data_source="cleaned"):
         val_losses.append(avg_val_loss)
         train_losses.append(avg_train_loss)
         print(f"✅ Validation Accuracy: {val_acc:.4f} | F1 Score (macro): {val_f1:.4f} | 🧪 Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
-        print(classification_report(y_true, y_pred, digits=3))
+        # print(classification_report(all_labels, all_preds, digits=3))
+        print_classification_report(all_labels, all_preds)  # print classification report every epoch
 
         # ======= Early Stopping and save the model======
         if val_f1 > best_val_f1 or (val_f1 == best_val_f1 and avg_val_loss < best_val_loss):
@@ -420,6 +425,8 @@ def train_model(data_source="cleaned"):
 
         torch.cuda.empty_cache()  # Free memory
 
+    print("\n📌 Training completed. Showing error analysis on final validation set:")
+    show_misclassified_examples(final_texts_for_analysis, final_true_labels_for_analysis, final_preds_for_analysis, max_errors=5)
 
     # === Save best model at the end of training ===
     if best_model_state_dict is not None:
@@ -429,7 +436,6 @@ def train_model(data_source="cleaned"):
         model.save_pretrained(model_path)  # Save model to disk
         tokenizer.save_pretrained(model_path)  # Save tokenizer to disk
         print(f"\n📦 Final best model saved to '{model_path}'")
-
 
     # Plot training vs validation loss
     plt.figure(figsize=(8, 6))
