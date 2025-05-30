@@ -1,9 +1,11 @@
 from sklearn.utils import compute_class_weight
 from sklearn.metrics import classification_report
+from sklearn.utils import resample
 import torch
 import pandas as pd
 from transformers import BertTokenizer, BertForSequenceClassification, get_scheduler
 from transformers import RobertaTokenizer, RobertaForSequenceClassification, RobertaConfig
+from transformers import pipeline, set_seed
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, f1_score
 from torch.optim import AdamW
@@ -126,7 +128,7 @@ def get_class_weights(labels, num_classes):  # Function to compute class weights
 
 
 def load_data(data_source="cleaned"):
-    """Fetches cleaned data from the database."""
+    """Fetches cleaned data from the database and optionally applies downsampling."""
     # db_url = get_db_url()   # Get database URL from environment variables
     engine = connect_to_db()  # Create a database engine
 
@@ -135,8 +137,8 @@ def load_data(data_source="cleaned"):
     df_orig = pd.read_sql(query_original, engine) # Load original data from the database
 
     # Load cleaned_data (cleaned data)
-    query_clenaed = "SELECT text, label FROM cleaned_data"
-    df_cleaned = pd.read_sql(query_clenaed, engine)
+    query_cleaned = "SELECT text, label FROM cleaned_data"
+    df_cleaned = pd.read_sql(query_cleaned, engine)
 
     # Map labels to integers
     label_mapping = {"Negative": 0, "Neutral": 1, "Positive": 2}
@@ -168,11 +170,16 @@ def load_data(data_source="cleaned"):
     return df
 
 
-def analyze_data_distribution(df):  # Function to analyze data distribution
-    """Analyzes data distribution by class and generates visual statistics."""
+def analyze_data_distribution(df, label_map={0: "Negative", 1: "Neutral", 2: "Positive"}):  # Function to analyze data distribution
+    """Analyzes data distribution by class and generates visual statistics with label names."""
 
-    # Count the number of records per class
-    label_counts = df["label"].value_counts()
+    # Map numeric labels to their names
+    df_mapped = df.copy()
+    df_mapped["label"] = df_mapped["label"].map(label_map)
+
+    label_counts = df_mapped["label"].value_counts()  # Count the number of records per class
+    label_order = ["Negative", "Neutral", "Positive"]  # Define desired order
+    label_counts = label_counts.reindex(label_order, fill_value=0)  # Reindex to match desired order, filling with 0 if a class is missing
     print("🔢 Count of records per class:")
     print(label_counts)
 
@@ -189,6 +196,88 @@ def analyze_data_distribution(df):  # Function to analyze data distribution
     plt.title("Distribution of labels in the dataset")
     plt.xticks(rotation=0)
     plt.show()
+
+
+def generate_synthetic_samples(class_label, prompt, num_samples=100, max_length=256):  # Function to generate synthetic samples using GPT-2 if needed oversampling
+    """Generate synthetic texts using GPT-2 for a specific class label."""
+    generator = pipeline("text-generation", model="gpt2")
+    set_seed(42)
+    
+    generated_texts = []
+    for _ in range(num_samples):
+        output = generator(prompt, max_length=max_length, num_return_sequences=1, do_sample=True, pad_token_id=50256)
+        text = output[0]["generated_text"]
+        generated_texts.append(text.strip())
+
+    return pd.DataFrame({"text": generated_texts, "label": class_label})
+
+
+def balance_dataset(df, label_map={0: "Negative", 1: "Neutral", 2: "Positive"}, down_thresh=0.1, up_thresh=0.5):
+    """
+    Automatically balances dataset:
+    - Downsamples if any class is overrepresented (above `down_thresh`).
+    - Oversamples with GPT-2 if any class is underrepresented (below `up_thresh`).
+    Logs the type of balancing applied.
+    """
+    label_counts = df["label"].value_counts()
+    max_count = label_counts.max()
+    min_count = label_counts.min()
+
+    applied_downsampling = False
+    applied_oversampling = False
+
+    # 🔽 Downsampling logic
+    if (max_count - min_count) / max_count >= down_thresh:
+        majority_label = label_counts.idxmax()
+        df_majority = df[df.label == majority_label]
+        df_minority = df[df.label != majority_label]
+
+        df_majority_downsampled = resample(
+            df_majority,
+            replace=False,
+            n_samples=len(df_minority),
+            random_state=42
+        )
+
+        df = pd.concat([df_majority_downsampled, df_minority])
+        df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+        applied_downsampling = True
+        print("⚠️ Downsampling applied to the majority class.")
+
+    # 🔼 Oversampling logic with GPT-2
+    label_counts = df["label"].value_counts()  # Recount after potential downsampling
+    max_class_count = label_counts.max()
+    augmented_dfs = [df]
+
+    for label, count in label_counts.items():
+        ratio = count / max_class_count
+        if ratio < up_thresh:
+            samples_needed = max_class_count - count
+            class_name = label_map[label]
+            print(f"🧠 Generating {samples_needed} synthetic samples for class '{class_name}' (label {label})...")
+            prompt = f"Reddit post expressing {class_name.lower()} sentiment:"
+            synthetic_df = generate_synthetic_samples(label, prompt, num_samples=samples_needed)
+            augmented_dfs.append(synthetic_df)
+            applied_oversampling = True
+
+    # Combine everything
+    df = pd.concat(augmented_dfs, ignore_index=True)
+    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+    # 📝 Log final action
+    if applied_downsampling and applied_oversampling:
+        print("🔁 Balanced dataset using both downsampling and oversampling.\n")
+    elif applied_downsampling:
+        print("🔽 Balanced dataset using downsampling only.\n")
+    elif applied_oversampling:
+        print("🔼 Balanced dataset using oversampling only.\n")
+    else:
+        print("✅ Dataset is balanced. No action required.\n")
+
+    # Mostrar distribución final
+    analyze_data_distribution(df)
+
+    return df
 
 
 def freeze_roberta_layers(model, num_layers_to_freeze=8):
@@ -239,6 +328,7 @@ def train_model(data_source="cleaned"):
     df = load_data(data_source) # Load data from the database
     analyze_data_distribution(df) # Analyze data distribution
 
+    df = balance_dataset(df) # Balance dataset if needed 
 
     # Splitting data into train and test
     train_texts, val_texts, train_labels, val_labels = train_test_split(
@@ -258,7 +348,6 @@ def train_model(data_source="cleaned"):
 
     num_classes = 3  # Number of classes
     
-
     config = RobertaConfig.from_pretrained(
         "roberta-base",
         num_labels=3,
