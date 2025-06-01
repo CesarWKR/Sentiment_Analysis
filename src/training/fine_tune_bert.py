@@ -5,7 +5,7 @@ import torch
 import pandas as pd
 from transformers import BertTokenizer, BertForSequenceClassification, get_scheduler
 from transformers import RobertaTokenizer, RobertaForSequenceClassification, RobertaConfig
-from transformers import pipeline, set_seed
+from transformers import pipeline, set_seed, AutoTokenizer, AutoModelForCausalLM
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, f1_score
 from torch.optim import AdamW
@@ -198,16 +198,31 @@ def analyze_data_distribution(df, label_map={0: "Negative", 1: "Neutral", 2: "Po
     plt.show()
 
 
-def generate_synthetic_samples(class_label, prompt, num_samples=100, max_length=256):  # Function to generate synthetic samples using GPT-2 if needed oversampling
-    """Generate synthetic texts using GPT-2 for a specific class label."""
-    generator = pipeline("text-generation", model="gpt2")
-    set_seed(42)
+def generate_synthetic_samples(class_label, prompt, num_samples=100, max_length=256, batch_size=32):  # Function to generate synthetic samples using GPT-2 if needed oversampling
+    """Generate synthetic texts using GPT-2 in batches for a specific class label."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tokenizer = AutoTokenizer.from_pretrained("gpt2") # Load GPT-2 tokenizer
+    model = AutoModelForCausalLM.from_pretrained("gpt2").to(device)
+    tokenizer.pad_token = tokenizer.eos_token  # GPT-2 has no pad token, so use EOS token
     
     generated_texts = []
-    for _ in range(num_samples):
-        output = generator(prompt, max_length=max_length, num_return_sequences=1, do_sample=True, pad_token_id=50256)
-        text = output[0]["generated_text"]
-        generated_texts.append(text.strip())
+    num_batches = (num_samples + batch_size - 1) // batch_size  # Calculate number of batches needed
+
+    for _ in tqdm(range(num_batches), desc=f"Generating for class {class_label}"):
+        current_batch_size = min(batch_size, num_samples - len(generated_texts))
+        prompts = [prompt] * current_batch_size
+
+        inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
+        outputs = model.generate(
+            **inputs,
+            max_length=max_length,
+            do_sample=True,
+            pad_token_id=tokenizer.eos_token_id,
+            num_return_sequences=1
+        )
+
+        decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        generated_texts.extend([text.strip() for text in decoded])
 
     return pd.DataFrame({"text": generated_texts, "label": class_label})
 
