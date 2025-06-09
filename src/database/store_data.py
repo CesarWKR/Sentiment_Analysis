@@ -2,17 +2,14 @@ import os
 import json
 from kafka import KafkaConsumer
 import pandas as pd
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
-#from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, Integer, String, Text, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-# from src.api.fetch_reddit import fetch_reddit_posts
 from src.database.db_connection import connect_to_db
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from src.preprocessing.clean_data import is_valid_text
 
 # Load environment variables
 load_dotenv()
@@ -102,6 +99,7 @@ SUBREDDIT_LABELS = {
 
 vader_analyzer = SentimentIntensityAnalyzer()
 
+
 def get_combined_label(text, subreddit=None):
     """
     Returns a combined label based on the subreddit (if provided)
@@ -130,7 +128,6 @@ def get_combined_label(text, subreddit=None):
 def store_reddit_posts(data: pd.DataFrame):
     """
     Stores Reddit post data in the 'reddit_posts' table.
-
     :param data: DataFrame or dict containing Reddit post data.
     """
     engine = connect_to_db()  # Connect to the database
@@ -139,10 +136,17 @@ def store_reddit_posts(data: pd.DataFrame):
     session = Session()  # Create a session to interact with the database
 
     try:
+        skipped_non_informative = 0
+        skipped_invalid_fields = 0
         if isinstance(data, pd.DataFrame): # Check if data is a DataFrame
             for _, row in data.iterrows(): # Iterate over each row in the DataFrame
                 if not row.get("id") or not row.get("text"):  # Check if 'id' and 'text' are present
-                    print("⚠️ Invalid data in row: missing 'id' or 'text'. Skipping...")
+                    # print("⚠️ Invalid data in row: missing 'id' or 'text'. Skipping...")
+                    skipped_invalid_fields += 1
+                    continue
+
+                if not is_valid_text(row["text"]):
+                    skipped_non_informative += 1
                     continue
 
                 post = RedditPost(
@@ -159,7 +163,12 @@ def store_reddit_posts(data: pd.DataFrame):
 
         elif isinstance(data, dict):   # Check if data is a dictionary
             if not data.get("id") or not data.get("text"):  
-                print("⚠️ Invalid data: missing 'id' or 'text'. Skipping...")
+                #print("⚠️ Invalid data: missing 'id' or 'text'. Skipping...")
+                skipped_invalid_fields += 1
+                return False
+            
+            if not is_valid_text(data["text"]):
+                skipped_non_informative += 1
                 return False
 
             post = RedditPost(
@@ -175,13 +184,18 @@ def store_reddit_posts(data: pd.DataFrame):
             session.merge(post)
 
         session.commit()   # Commit the session to save changes
+
+        if skipped_non_informative > 0:
+            print(f"🧹 Skipped {skipped_non_informative} non-informative texts.")
+        if skipped_invalid_fields > 0:
+            print(f"⚠️ Skipped {skipped_invalid_fields} rows due to missing 'id' or 'text'.")
+
         return True
 
     except Exception as e:
         session.rollback()
         print(f"❌ Error storing data in reddit_posts: {e}")
         return False
-
 
     finally: # Ensure the session is closed after processing
         session.close()
@@ -238,6 +252,42 @@ def store_cleaned_data(data: pd.DataFrame):
         session.close()
 
 
+def store_balanced_data(data: pd.DataFrame, table_name="balanced_data"):
+    return store_generic_table(data, table_name)
+
+def store_synthetic_data(data: pd.DataFrame, table_name="synthetic_data"):
+    return store_generic_table(data, table_name)
+
+def store_generic_table(data: pd.DataFrame, table_name: str):
+    """
+    Stores generic labeled data in the specified table.
+    """
+    engine = connect_to_db()
+    Base.metadata.create_all(engine)  # Make sure all tables are created
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    try:
+        if isinstance(data, pd.DataFrame):
+            data.to_sql(table_name, engine, if_exists='append', index=False)
+        elif isinstance(data, dict):
+            pd.DataFrame([data]).to_sql(table_name, engine, if_exists='append', index=False)
+        else:
+            print(f"⚠️ Unsupported data format for {table_name}.")
+            return False
+
+        print(f"✅ Stored data in {table_name}")
+        return True
+
+    except Exception as e:
+        session.rollback()
+        print(f"❌ Error storing data in {table_name}: {e}")
+        return False
+
+    finally:
+        session.close()
+
+
 def store_data(data: pd.DataFrame, table_name="cleaned_data"):
     """
     Wrapper function that routes data to the correct storage function
@@ -250,6 +300,10 @@ def store_data(data: pd.DataFrame, table_name="cleaned_data"):
         return store_reddit_posts(data)
     elif table_name == "cleaned_data":
         return store_cleaned_data(data)
+    elif table_name.startswith("balanced_"):  # Check if the table name starts with 'balanced_'
+        return store_balanced_data(data, table_name)
+    elif table_name.startswith("synthetic_"):  # Check if the table name starts with 'synthetic_'
+        return store_synthetic_data(data, table_name)
     else:
         print(f"⚠️ Unknown table name: {table_name}")
         return False
@@ -299,7 +353,6 @@ def consume_from_kafka():
     print(f"✅ Finished. Total messages: {total_messages}, stored: {stored}, failed: {failed}")
 
 
-
 def save_validation_data(val_texts, val_labels, table_name="validation_data", if_exists="replace"):  # Save validation data (20% of the fetched data) to the database to be used in the testing process
     """
     Stores validation data into the database.
@@ -335,7 +388,6 @@ def save_validation_data(val_texts, val_labels, table_name="validation_data", if
             
         }) # Create a DataFrame with text and label columns converted to string
 
-        # db_url = get_db_url()
         engine = connect_to_db()  # Create a database engine
 
         # Save validation data to the database 
@@ -347,7 +399,6 @@ def save_validation_data(val_texts, val_labels, table_name="validation_data", if
     except SQLAlchemyError as e: # Handle SQLAlchemy errors
         print(f"❌ Error storing validation data: {e}")
         return False
-
 
 
 def store_results_in_db(engine, results_to_store): # Store validation results in the database
