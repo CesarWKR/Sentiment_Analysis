@@ -2,7 +2,6 @@ import os
 import torch
 import pandas as pd
 import sqlite3
-from transformers import BertTokenizer, BertForSequenceClassification
 from transformers import RobertaTokenizer, RobertaForSequenceClassification
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report
@@ -26,35 +25,22 @@ model_path = "bert_sentiment_model"
 if not os.path.exists(model_path):
     raise FileNotFoundError(f"❌ Model path '{model_path}' not found. Train the model first!")
 
-# Load pre-trained model and tokenizer
-# tokenizer = BertTokenizer.from_pretrained(model_path)
-# model = BertForSequenceClassification.from_pretrained(model_path).to(device)
 tokenizer = RobertaTokenizer.from_pretrained(model_path)
 model = RobertaForSequenceClassification.from_pretrained(model_path).to(device)
 model.eval()  # Set model to evaluation mode
 
 # Load validation data from database connection
-# db_url = get_db_url()
 engine = connect_to_db()  # Connect to the database
 
 """ Fetch validation data from the database use this to fetch 20% of the data for validation or instead you can use the 
     validation_data set which is already in the database
 """
-# with engine.connect() as conn:
-#     result = conn.execute(text("""
-#         SELECT text FROM reddit_posts 
-#         ORDER BY RANDOM() 
-#         LIMIT (SELECT COUNT(*) * 0.2 FROM reddit_posts)  -- Fetch random 20% of texts for validation
-#     """))
-#     val_texts = [row[0] for row in result.fetchall()] # Fetch random 20% of texts for validation 
-
 
 # Fetch validation data from the 'validation_data' table
 with engine.connect() as conn:
     result = conn.execute(sql_text("SELECT text FROM validation_data"))
     val_texts = [row[0] for row in result.fetchall()] # Fetch all texts from the validation_data table
     print(f"🔢 Loaded {len(val_texts)} validation samples from 'validation_data'.")
-
 
 
 def predict_sentiment(text):
@@ -83,15 +69,6 @@ def predict_sentiment(text):
     return predicted_class  # Return the index instead of the label
 
 def evaluate_model():
-    # """Evaluates the model using test samples with known labels."""
-    # test_samples = [
-    #     ("I love this product, it's amazing!", 2),  # Positive
-    #     ("This is the worst thing I've ever bought.", 0),  # Negative
-    #     ("It's okay, nothing special.", 1),  # Neutral
-    #     ("I would not recommend this to anyone.", 0),  # Negative
-    #     ("Absolutely fantastic! Will buy again.", 2),  # Positive
-    # ]      
-
     """Evaluates the model using validation_results stored in the database."""
 
     with engine.connect() as conn: # Connect to the database
@@ -124,12 +101,6 @@ def evaluate_model():
         print("⚠️ No matching texts found in validation data.")
         return
 
-    # true_labels_idx = [label for _, label in test_samples] # Extract true labels from test samples (0, 1, 2)
-    # predicted_labels_idx = [predict_sentiment(text) for text, _ in test_samples] # Predict sentiment for each text 
-
-    # true_labels = [LABELS[i] for i in true_labels_idx] # Convert true labels to string labels (Negative, Neutral, Positive)
-    # predicted_labels = [LABELS[i] for i in predicted_labels_idx] # Convert predicted labels to string labels (Negative, Neutral, Positive)
-
     accuracy = accuracy_score(filtered_true_labels, filtered_pred_labels) 
     f1 = f1_score(filtered_true_labels, filtered_pred_labels, average="weighted") 
 
@@ -138,7 +109,6 @@ def evaluate_model():
 
     # Confusion Matrix
     conf_matrix = confusion_matrix(filtered_true_labels, filtered_pred_labels, labels=LABELS) # Create confusion matrix
-
     plt.figure(figsize=(6, 5))
     sns.heatmap(conf_matrix, annot=True, cmap="Blues", fmt="d", xticklabels=LABELS, yticklabels=LABELS)
     plt.xlabel("Predicted Labels")
@@ -149,7 +119,6 @@ def evaluate_model():
     # Classification Report
     print("\n📊 **Classification Report:**\n")
     print(classification_report(filtered_true_labels, filtered_pred_labels, target_names=LABELS, zero_division=0)) # Print classification report
-
 
 
 def manual_prediction():
@@ -181,6 +150,6 @@ def run_validation_and_store_results():
     store_results_in_db(engine, results_to_store) # Store results in the database
 
 if __name__ == "__main__":
-    # run_validation_and_store_results()  # Run validation and store results in DB
+    run_validation_and_store_results()  # Run validation and store results in DB
     evaluate_model()  # Run model evaluation
-    # manual_prediction()  # Allow user to input texts
+    manual_prediction()  # Allow user to input texts
