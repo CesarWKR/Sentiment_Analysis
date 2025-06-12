@@ -70,6 +70,11 @@ TOTAL_LIMIT = 50000       # Total posts to fetch, MAX 50k of posts allowed
 MAX_POSTS_PER_CATEGORY = 990  # Maximum posts per category
 # posts_per_subreddit = TOTAL_LIMIT // len(subreddits)  # Distribute posts evenly
 posts_per_subreddit = min(MAX_POSTS_PER_CATEGORY, TOTAL_LIMIT // len(subreddits))  # Select max posts per subreddit in each category, no more than TOTAL_LIMIT and no more than MAX_POSTS_PER_CATEGORY
+"""⚠️  Note: Although TOTAL_LIMIT can be greater than 50,000, the Reddit API imposes 
+a practical limit of ~1000 posts per category (hot, new, top, etc.) per subreddit.
+This means that the maximum total achievable with this approach is limited (~50k-60k),
+even if many subreddits and categories are used."""
+
 
 
 # Global counters
@@ -240,18 +245,12 @@ def fetch_reddit_posts(subreddit_name, desired_count, mode="sentiment"):
 
  
 if __name__ == "__main__":
-    # for subreddit in subreddits:
-    #     fetch_reddit_posts(subreddit, desired_count=posts_per_subreddit)
+    """ Main function to fetch posts from Reddit and send them to Kafka. """
     all_sent = 0
     progress_bar = tqdm(total=TOTAL_LIMIT, desc="📥 Sending posts to Kafka", ncols=100)
 
     for subreddit in subreddits:
-        # before = global_sent # Store the current number of sent posts
         df, num_sent = fetch_reddit_posts(subreddit, desired_count=posts_per_subreddit)
-        # after = global_sent # Update the progress bar based on the number of posts sent to Kafka
-        # delta = after - before
-        # all_sent += delta
-        # progress_bar.update(df[0].shape[0])  # Update the progress bar with the number of posts sent
         if df is not None and not df.empty:
             progress_bar.update(num_sent)  # Update the progress bar with the number of posts sent
         
