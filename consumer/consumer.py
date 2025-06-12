@@ -2,9 +2,8 @@ from kafka import KafkaConsumer, KafkaProducer
 import json
 import os
 import logging
-from src.database.db_connection import connect_to_db
 from src.database.store_data import store_data
-from src.preprocessing.clean_data import clean_text
+from src.preprocessing.clean_data import process_kafka_messages
 from src.preprocessing.clean_data import process_and_store_data  # Import the function to clean and store data
 from dotenv import load_dotenv
 
@@ -15,7 +14,7 @@ load_dotenv()
 # # Kafka settings from docker-compose
 # KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 # KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "reddit_posts")
-# GROUP_ID = "consumer_group"
+# GROUP_ID = "reddit_consumer_group"
 
 
 logging.basicConfig(
@@ -23,12 +22,11 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-
-KAFKA_BROKER = "localhost:9092"  # Default localhost
-# KAFKA_BROKER = "kafka:9092"  # Docker container name and port
-KAFKA_TOPIC = "reddit_posts"
-TOPIC_OUTPUT = "cleaned_data"
-GROUP_ID = "reddit_consumer_group"
+# Kafka settings
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "reddit_posts")
+TOPIC_OUTPUT = os.getenv("TOPIC_OUTPUT", "cleaned_data")
+GROUP_ID = os.getenv("KAFKA_GROUP_ID", "reddit_consumer_group")
 
 consumer = KafkaConsumer(
     KAFKA_TOPIC,
@@ -45,25 +43,58 @@ producer = KafkaProducer(
     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
 )
 
-def consume_messages():
+def consume_messages(batch_size=1000):
     logging.info(f"🔄 Listening to Kafka topic: {KAFKA_TOPIC}")
+    batch = []
     total_consumed = 0
-    for message in consumer:
+    try:
+        for message in consumer:
+            batch.append(message)
+            if len(batch) >= batch_size:
+                process_batch(batch)
+                # total_consumed += batch_size
+                total_consumed += len(batch)
+                batch.clear()
+
+                if total_consumed % 10000 == 0:
+                    logging.info(f"🔄 Messages consumed so far: {total_consumed}") 
+
+    except KeyboardInterrupt:
+        logging.info("🛑 Stopped consuming manually.")
+    finally:
+        if batch:
+            process_batch(batch)
+            logging.info("✅ Remaining batch processed.")   
+
+
+def process_batch(batch):  
+    """Process a batch of messages from Kafka."""
+    raw_records = []
+    for message in batch:
         try:
-            raw_data = message.value # Get the raw data from the message
+            raw_data = message.value 
             store_data(raw_data, table_name="reddit_posts")  # Store raw data in the database
-            cleaned_data = process_and_store_data([message])  # Call cleaning function with the list message value
+            raw_records.append(message)  # Store the raw record for further processing
 
-
-            if cleaned_data:  # Check if cleaned_data is not empty
-                producer.send(TOPIC_OUTPUT, cleaned_data)  # Send cleaned data to output topic
         except Exception as e:
-            logging.error(f"❌ Error processing message: {e}")
-        
-        total_consumed += 1
-        if total_consumed % 10000 == 0:  # Log every 10000 messages
-            logging.info(f"🔄 Total consumed mesages: {total_consumed}")    
+            logging.error(f"❌ Error storing raw data: {e}")
+
+    try:
+        cleaned_data = process_kafka_messages(raw_records)  # Apply cleaning + DA and store in cleaned_data
+
+        # Resend the cleaned result to Kafka
+        # if cleaned_data is not None:
+        if cleaned_data:  # Check if there is any cleaned data to send
+            for record in cleaned_data:
+                try: 
+                    producer.send(TOPIC_OUTPUT, record)  # Send cleaned data to the output topic
+                except Exception as e:
+                    logging.error(f"❌ Error sending message to {TOPIC_OUTPUT} in Kafka: {e}")
+        logging.info(f"✅ Sent {len(cleaned_data)} cleaned messages to {TOPIC_OUTPUT}")
+
+    except Exception as e:
+        logging.error(f"❌ Error in processing batch: {e}")
 
 if __name__ == "__main__":
     consume_messages()
-    print("All messages consumed and processed.")
+    logging.info("✅ All messages consumed and processed.")
