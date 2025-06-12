@@ -201,6 +201,34 @@ def store_reddit_posts(data: pd.DataFrame):
         session.close()
 
 
+def store_relabeled_data(data: pd.DataFrame):
+    """
+    Stores data in the 'relabeled_data' table.
+    This table is created fresh with 'text' and 'label' columns based on hybrid relabeling.
+    
+    :param data: DataFrame with columns ['text', 'label']
+    """
+    engine = connect_to_db()
+
+    if not isinstance(data, pd.DataFrame):
+        print("❌ Provided data is not a DataFrame.")
+        return False
+
+    if "text" not in data.columns or "label" not in data.columns:  # Check if 'text' and 'label' columns are present
+        print("❌ DataFrame must contain 'text' and 'label' columns.")
+        return False
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS relabeled_data;"))  # Drop if exists
+            data.to_sql("relabeled_data", conn, index=False)
+            print(f"✅ Table 'relabeled_data' created with {len(data)} records.")
+        return True
+    except Exception as e:
+        print(f"❌ Error storing data in relabeled_data: {e}")
+        return False
+
+
 def store_cleaned_data(data: pd.DataFrame):
     """
     Stores cleaned data in the 'cleaned_data' table.
@@ -294,12 +322,14 @@ def store_data(data: pd.DataFrame, table_name="cleaned_data"):
     based on the table_name.
 
     :param data: DataFrame or dict to store.
-    :param table_name: Name of the target table ('reddit_posts' or 'cleaned_data').
+    :param table_name: Name of the target table ('reddit_posts', 'cleaned_data', 'relabeled_data', 'balanced_data', 'synthetic_data').
     """
     if table_name == "reddit_posts":
         return store_reddit_posts(data)
     elif table_name == "cleaned_data":
         return store_cleaned_data(data)
+    elif table_name == "relabeled_data":  # Check if the table name is 'relabeled_data'
+        return store_relabeled_data(data)
     elif table_name.startswith("balanced_"):  # Check if the table name starts with 'balanced_'
         return store_balanced_data(data, table_name)
     elif table_name.startswith("synthetic_"):  # Check if the table name starts with 'synthetic_'
@@ -309,60 +339,14 @@ def store_data(data: pd.DataFrame, table_name="cleaned_data"):
         return False
 
 
-def consume_from_kafka():
+def save_validation_data(val_texts, val_labels, table_name="validation_data"):  # Save validation data (20% of the fetched data) to the database to be used in the testing process
     """
-    It consumes Kafka messages to store data in the corresponding tables.
-    """
-    consumer = KafkaConsumer(
-        KAFKA_TOPIC_RAW, KAFKA_TOPIC_CLEANED,  
-        bootstrap_servers=KAFKA_BROKER,
-        group_id=KAFKA_GROUP_ID,  # Consumer group ID  
-        value_deserializer=lambda x: json.loads(x.decode("utf-8")),  # Deserialize JSON messages
-        auto_offset_reset="earliest",
-        enable_auto_commit=True   # Automatically commit offsets
-    )
-    print("🔄 Waiting for Kafka messages...")
-
-    total_messages = 0
-    stored = 0
-    failed = 0
-
-    for message in consumer: # Iterate over messages from Kafka
-        total_messages += 1 # Increment total message count
-        topic = message.topic # Get the topic of the message
-        # data = message.value # Get the message value
-        data = message.value if hasattr(message, "value") else message # Check if the message is already in dict format
-
-        if topic == KAFKA_TOPIC_RAW: # Check if the topic is reddit_posts
-            success = store_data(data, table_name="reddit_posts")
-        elif topic == KAFKA_TOPIC_CLEANED: # Check if the topic is cleaned_data
-            success = store_data(data, table_name="cleaned_data")
-        else:
-            success = False # Invalid topic
-
-        if success:        # Check if data was stored successfully
-            stored += 1    # Increment stored count
-        else:              # If data storage failed
-            failed += 1    # Increment failed count
-
-        # Displays summary every 10000 messages to avoid overloading the terminal
-        if total_messages % 10000 == 0: # Print summary every 10000 messages
-            print(f"📊 Processed: {total_messages}, stored: {stored}, failed: {failed}")
-
-    # Final summary after processing all messages
-    print(f"✅ Finished. Total messages: {total_messages}, stored: {stored}, failed: {failed}")
-
-
-def save_validation_data(val_texts, val_labels, table_name="validation_data", if_exists="replace"):  # Save validation data (20% of the fetched data) to the database to be used in the testing process
-    """
-    Stores validation data into the database.
+    Stores validation data into the database, replacing any existing data.
 
     Args:
         val_texts (list): List of validation texts.
         val_labels (list): List of corresponding numeric labels.
         table_name (str): Name of the table to store the data.
-        if_exists (str): What to do if the table already exists: 'fail', 'replace', 'append'.
-
     Returns:
         bool: True if data was saved successfully, False otherwise.
     """
@@ -389,11 +373,14 @@ def save_validation_data(val_texts, val_labels, table_name="validation_data", if
         }) # Create a DataFrame with text and label columns converted to string
 
         engine = connect_to_db()  # Create a database engine
+        with engine.begin() as conn:
+            # Delete the table if it exists
+            conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
 
         # Save validation data to the database 
-        val_df.to_sql(table_name, engine, if_exists=if_exists, index=False)
+        val_df.to_sql(table_name, engine, index=False)
 
-        print(f"✅ Storaged {len(val_df)} validation records in the database for the '{table_name}' table.")
+        print(f"✅ Stored {len(val_df)} validation records in the database for the '{table_name}' table.")
         return True
 
     except SQLAlchemyError as e: # Handle SQLAlchemy errors
@@ -403,6 +390,7 @@ def save_validation_data(val_texts, val_labels, table_name="validation_data", if
 
 def store_results_in_db(engine, results_to_store): # Store validation results in the database
     """Stores validation results in the database.
+        If the table already contains data, it clears the table before inserting new predictions.
         :param engine: SQLAlchemy database engine.
         :param results_to_store: List of (text, predicted_label) tuples.
     """
@@ -416,6 +404,16 @@ def store_results_in_db(engine, results_to_store): # Store validation results in
             )
         """))
 
+        # Check if the table already contains data
+        result = conn.execute(text("SELECT COUNT(*) FROM validation_results"))
+        count = result.scalar()
+
+        if count > 0:
+            print(f"⚠️ Table 'validation_results' already contains {count} records. Clearing it before inserting new ones.")
+            conn.execute(text("DELETE FROM validation_results"))
+        else:
+            print("🆕 Table 'validation_results' is empty. Proceeding with insert.")
+
         # Insert predictions into the database
         for text_val, prediction in results_to_store: # Iterate over the results to store
             conn.execute(text("""
@@ -426,5 +424,3 @@ def store_results_in_db(engine, results_to_store): # Store validation results in
     print("✅ Validation results stored in database.")
 
 
-if __name__ == "__main__":
-    consume_from_kafka()
