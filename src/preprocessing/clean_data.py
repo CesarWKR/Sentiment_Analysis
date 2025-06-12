@@ -5,9 +5,10 @@ import json
 import pandas as pd
 import nltk
 from nltk.corpus import stopwords
-from kafka import KafkaConsumer
-import src.preprocessing.metrics as metrics
+from src.database.db_connection import connect_to_db
+from src.preprocessing.metrics import metrics
 from src.preprocessing.data_augmentation import apply_data_augmentation
+import logging
 
 
 # Download NLTK data files
@@ -86,99 +87,79 @@ def clean_generated_text(text, prompt):
     return text.strip()
 
 
-def process_and_store_data(batch_messages):
-    """Processes and stores a single message received from Kafka."""
+def process_and_store_data():
+    """Reads data from relabeled_data, cleans it, applies data augmentation, and stores in cleaned_data."""
     from src.database.store_data import store_data
+    engine = connect_to_db()  # Connect to the database
+    df = pd.read_sql("SELECT * FROM relabeled_data", engine)
     all_processed_data = []
-    error_count = 0  # Initialize error count
     
-    for message in batch_messages:
-        try:
-            data = message.value if hasattr(message, "value") else message # Check if message is already in dict format
-            post_id = data.get("id")
-            text = data.get("text", "")
-            label = data.get("label", "Neutral")  # Default label to "Neutral" if not provided
+    for _, row in df.iterrows():  # Iterate through each row in the DataFrame
+        text = row["text"]
+        label = row["label"]
 
-            if not text:
-                metrics.empty_text_count += 1
-                continue  # Skip empty text
+        if not text:
+            metrics.empty_text_count += 1
+            continue  # Skip empty text
         
-            # Apply text cleaning
-            cleaned_text = clean_text(text)
-            if not is_valid_text(cleaned_text):
-                metrics.invalid_text_count += 1  # Increment invalid text count
-                continue  # Skip if the text is not valid
-            
-            # Apply data augmentation
-            augmented_data = apply_data_augmentation(cleaned_text)
+        # Apply text cleaning
+        cleaned_text = clean_text(text)
+        if not is_valid_text(cleaned_text):
+            metrics.invalid_text_count += 1  # Increment invalid text count
+            continue  # Skip if the text is not valid
 
-            processed_data = []
-            for aug_text, aug_type in augmented_data: # Unpack the tuple into text and augmentation type
-                processed_data.append({
+        # Apply data augmentation
+        augmented_data = apply_data_augmentation(cleaned_text)
+
+        for aug_text, aug_type in augmented_data: # Unpack the tuple into text and augmentation type
+                all_processed_data.append({  # Create a dictionary for each processed data entry
                     "text": aug_text,
                     "label": label,
                     "is_augmented": aug_type is not None,
                     "augmentation_type": aug_type
                 })
-            all_processed_data.extend(processed_data)  # Add to the list of all processed data
 
-        except Exception as e:
-            print(f"❌ Error processing message: {e}")
-            error_count += 1 # Increment error count
-    
     if all_processed_data: # Check if there are any processed data to store
         df_cleaned = pd.DataFrame(all_processed_data) # Create DataFrame from all processed data
         store_data(df_cleaned, table_name="cleaned_data") # Store all processed data in DB
-    
-    count_errors = 0
-    if error_count > 0: # Check if there were any errors during processing
-        count_errors += error_count # Increment error count
-        if count_errors >= 1000: # If error count exceeds 1000, log a warning
-            print(f"❌ Warning: {count_errors} messages failed to process in this batch due to processing errors") # Log the warning
-        
-    elif not all_processed_data:
-        pass
-
- 
-def consume_messages(batch_size=1000):  
-    """Consumes messages from Kafka topic and processes them."""
-    consumer = KafkaConsumer(
-        KAFKA_TOPIC,   # Fetch messages from raw data topic
-        bootstrap_servers=KAFKA_BROKER,  # Kafka broker address
-        group_id=KAFKA_GROUP_ID,  # Consumer group to prevent duplicate processing
-        auto_offset_reset="earliest",   # Start from the earliest message
-        enable_auto_commit=True,    # Automatically commit offsets
-        value_deserializer=lambda x: json.loads(x.decode("utf-8"))  # Decode JSON messages deserializer  
-    )
-
-    print(f"🔄 Listening to Kafka topic: {KAFKA_TOPIC}")
-
-    batch = []
-    total_invalid_texts = 0
-    total_stored_texts = 0
-    try:
-        for message in consumer:
-            batch.append(message) # Collect messages in a batch
-            if len(batch) >= batch_size: # Check if batch size is reached
-                invalid_texts = process_and_store_data(batch) # Process the batch of messages
-                total_invalid_texts += invalid_texts
-                total_stored_texts += batch_size - invalid_texts
-                batch.clear() # Clear the batch after processing
-    except KeyboardInterrupt:
-        print("🛑 Stopped consuming manually.")
-    finally:
-        if batch:
-            invalid_texts = process_and_store_data(batch)
-            total_invalid_texts += invalid_texts
-            total_stored_texts += len(batch) - invalid_texts
-        print(f"📉 Total discarded invalid texts: {total_invalid_texts}")
-        if total_stored_texts == 0:
-            print("⚠️ No valid data was stored during this session.")
-        else:
-            print(f"✅ Total valid entries stored: {total_stored_texts}")
 
 
-if __name__ == "__main__":
-    consume_messages()  # Start consuming messages
+def process_kafka_messages(messages):
+    """
+    Cleans and validates Kafka messages. Returns a list of dictionaries ready to store and send to another topic.
+    """
+    cleaned_data = []
 
+    for message in messages:
+        try:
+            msg_value = message.value if hasattr(message, 'value') else message  # Supports KafkaMessage or dict
+            
+            if not isinstance(msg_value, dict):
+                logging.warning(f"⚠️ Unexpected message format: {msg_value}")
+                continue
+            
+            text = msg_value.get("text", "")
+            label = msg_value.get("label", None)
 
+            if not text:
+                metrics.empty_text_count += 1
+                continue
+
+            cleaned_text = clean_text(text)
+            if not is_valid_text(cleaned_text):
+                metrics.invalid_text_count += 1
+                continue
+
+            # We do not apply augmentation here because this is for the real-time flow
+            cleaned_data.append({
+                "text": cleaned_text,
+                "label": label,
+                "is_augmented": False,
+                "augmentation_type": None
+            })
+
+        except Exception as e:
+            print(f"❌ Error processing message: {e}| message: {message}")
+            continue
+
+    return cleaned_data if cleaned_data else None
