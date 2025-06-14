@@ -3,6 +3,7 @@ import pandas as pd
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from src.database.db_connection import connect_to_db
 from src.database.store_data import store_data
+from tqdm import tqdm
 
 # Configuration
 MODEL_NAME = "cardiffnlp/twitter-roberta-base-sentiment"  # Pre-trained model for sentiment analysis
@@ -12,16 +13,30 @@ TARGET_TABLE = "relabeled_data"
 TEXT_COLUMN = "text"
 LABEL_COLUMN = "label"
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    torch.backends.cudnn.benchmark = True  # Optimize GPU performance
+
 # Charge the model and tokenizer which is already trained and will be used for inference and prediction to relabel mislabeled data
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+model.to(device)  # Move model to the appropriate device (GPU or CPU)
 model.eval()
 
 engine = connect_to_db()  # Connect to the database
 
-
 def predict_label(text):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
+    inputs = tokenizer(
+        text,
+        return_tensors="pt",
+        truncation=True,
+        max_length=256,     # Limit to 256 tokens
+        padding="max_length"  # Ensure fixed size
+    ).to(device)  # Move inputs to the same device as the model
+
     with torch.no_grad():
         outputs = model(**inputs)
         logits = outputs.logits
@@ -42,7 +57,7 @@ def hybrid_relabeling():
     df[TEXT_COLUMN] = df[TEXT_COLUMN].apply(simple_cleaning)
 
     predicted_labels = []
-    for text in df[TEXT_COLUMN]:
+    for text in tqdm(df[TEXT_COLUMN], desc="🔁 Re-labeling"):
         try:
             predicted = predict_label(text)
         except Exception as e:
@@ -51,7 +66,7 @@ def hybrid_relabeling():
 
     df["predicted_label"] = predicted_labels
 
-    # Reelabeling logic
+    # Re-labeling logic
     df["final_label"] = df.apply(
         lambda row: row["predicted_label"] if row["label"] != row["predicted_label"] else row["label"],
         axis=1
