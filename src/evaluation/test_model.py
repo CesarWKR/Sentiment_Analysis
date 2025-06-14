@@ -21,7 +21,7 @@ print(f"🚀 Using device: {device}")
 LABELS = ["Negative", "Neutral", "Positive"]
 
 # Model path (ensure it exists)
-model_path = "bert_sentiment_model"
+model_path = "Roberta_sentiment_model"
 if not os.path.exists(model_path):
     raise FileNotFoundError(f"❌ Model path '{model_path}' not found. Train the model first!")
 
@@ -86,9 +86,18 @@ def evaluate_model():
         result = conn.execute(sql_text("SELECT text, label FROM validation_data")) # Fetch validation data from the database
         validation_data = result.fetchall() # Fetch all validation data from the database
 
-    true_label_map = {text: LABELS[label] for text, label in validation_data if label in [0, 1, 2]} # Use this if labels are numbers as 0, 1, 2
+    # true_label_map = {text: LABELS[int(label)] for text, label in validation_data if int(label) in [0, 1, 2]} # Use this if labels are numbers as 0, 1, 2
     # true_label_map = {text: label for text, label in validation_data if label in LABELS} # Use this if labels are strings as Negative, Neutral, Positive
-    
+    true_label_map = {}
+    for text, label in validation_data: # Iterate over the validation data to create a mapping of text to label
+        try:
+            label_int = int(label) # Convert label to integer
+            # Check if the label is within the valid range of indices for LABELS
+            if label_int in LABELS:
+                true_label_map[text] = LABELS[label_int]
+        except (ValueError, TypeError):
+            print(f"⚠️ Skipping invalid label: {label}")
+
     filtered_true_labels = []
     filtered_pred_labels = []
 
@@ -145,7 +154,7 @@ def run_validation_and_store_results():
     for text in val_texts: # Iterate over the validation texts
         pred_index = predict_sentiment(text) # Get the predicted index
         if pred_index is not None: # Check if prediction is valid
-            label = LABELS[pred_index] # Get the label from the index (Negative, Neutral, Positive intead of 0, 1, 2)
+            label = LABELS[pred_index] # Get the label from the index (Negative, Neutral, Positive instead of 0, 1, 2)
             results_to_store.append((text, label)) # Append the text and label to the results list
     store_results_in_db(engine, results_to_store) # Store results in the database
 
