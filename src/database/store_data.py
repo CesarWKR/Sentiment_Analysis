@@ -1,6 +1,4 @@
 import os
-import json
-from kafka import KafkaConsumer
 import pandas as pd
 from sqlalchemy import Column, Integer, String, Text, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -27,7 +25,6 @@ class RedditPost(Base):
     __tablename__ = "reddit_posts"
 
     id = Column(String, primary_key=True)  # Reddit post ID
-    # title = Column(String(255), nullable=False)
     title = Column(Text, nullable=False)  # Change to Text for longer titles
     score = Column(Integer, nullable=False)
     url = Column(Text, nullable=True)
@@ -141,7 +138,6 @@ def store_reddit_posts(data: pd.DataFrame):
         if isinstance(data, pd.DataFrame): # Check if data is a DataFrame
             for _, row in data.iterrows(): # Iterate over each row in the DataFrame
                 if not row.get("id") or not row.get("text"):  # Check if 'id' and 'text' are present
-                    # print("⚠️ Invalid data in row: missing 'id' or 'text'. Skipping...")
                     skipped_invalid_fields += 1
                     continue
 
@@ -163,7 +159,6 @@ def store_reddit_posts(data: pd.DataFrame):
 
         elif isinstance(data, dict):   # Check if data is a dictionary
             if not data.get("id") or not data.get("text"):  
-                #print("⚠️ Invalid data: missing 'id' or 'text'. Skipping...")
                 skipped_invalid_fields += 1
                 return False
             
@@ -200,7 +195,6 @@ def store_reddit_posts(data: pd.DataFrame):
     finally: # Ensure the session is closed after processing
         session.close()
 
-
 def store_relabeled_data(data: pd.DataFrame):
     """
     Stores data in the 'relabeled_data' table.
@@ -217,13 +211,12 @@ def store_relabeled_data(data: pd.DataFrame):
     if "text" not in data.columns or "label" not in data.columns:  # Check if 'text' and 'label' columns are present
         print("❌ DataFrame must contain 'text' and 'label' columns.")
         return False
-
+    
     try:
-        with engine.begin() as conn:
-            conn.execute(text("DROP TABLE IF EXISTS relabeled_data;"))  # Drop if exists
-            data.to_sql("relabeled_data", conn, index=False)
-            print(f"✅ Table 'relabeled_data' created with {len(data)} records.")
+        data.to_sql("relabeled_data", engine, index=False, if_exists="replace", chunksize=5000)  # Store data in 'relabeled_data' table 
+        print(f"✅ Stored {len(data)} records in 'relabeled_data'.")
         return True
+
     except Exception as e:
         print(f"❌ Error storing data in relabeled_data: {e}")
         return False
@@ -238,31 +231,31 @@ def store_cleaned_data(data: pd.DataFrame):
     engine = connect_to_db()
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
-    session = Session()
+    session = Session()  # Create a session to interact with the database
 
     try:
         if isinstance(data, pd.DataFrame):
             for _, row in data.iterrows():
                 if not row.get("text") or not row.get("label"): # Check if 'text' and 'label' are present
-                    print("⚠️ Invalid cleaned data: missing 'text' or 'label'. Skipping...")
+                    print("⚠️ Invalid cleaned data (rows): missing 'text' or 'label'. Skipping...")
                     continue
 
                 cleaned_entry = CleanedData(
                     text=row["text"],
                     label=row["label"]
                 )
-                session.add(cleaned_entry) # Add the cleaned entry to the session
+                session.merge(cleaned_entry)  # Replace the cleaned entry in the session
 
         elif isinstance(data, dict): # Check if data is a dictionary
             if not data.get("text") or not data.get("label"):
-                # print("⚠️ Invalid cleaned data: missing 'text' or 'label'. Skipping...")
+                # print("⚠️ Invalid cleaned data (dict): missing 'text' or 'label'. Skipping...")
                 return False
 
             cleaned_entry = CleanedData(
                 text=data["text"],
                 label=data["label"]
             )
-            session.add(cleaned_entry) 
+            session.merge(cleaned_entry)  # Replace the cleaned entry in the session
 
         else:
             print("⚠️ Data format not supported for cleaned_data.")
@@ -291,15 +284,17 @@ def store_generic_table(data: pd.DataFrame, table_name: str):
     Stores generic labeled data in the specified table.
     """
     engine = connect_to_db()
-    Base.metadata.create_all(engine)  # Make sure all tables are created
-    Session = sessionmaker(bind=engine)
-    session = Session()
+    # Base.metadata.create_all(engine)  # This method only works with SQLAlchemy ORM models, it is useless for pandas DataFrames
 
+    if not isinstance(data, (pd.DataFrame, dict)):
+        print(f"❌ Unsupported data format for {table_name}. Expected DataFrame or dict.")
+        return False
+    
     try:
         if isinstance(data, pd.DataFrame):
-            data.to_sql(table_name, engine, if_exists='append', index=False)
+            data.to_sql(table_name, engine, if_exists='replace', index=False, chunksize=5000)
         elif isinstance(data, dict):
-            pd.DataFrame([data]).to_sql(table_name, engine, if_exists='append', index=False)
+            pd.DataFrame([data]).to_sql(table_name, engine, if_exists='replace', index=False, chunksize=5000)
         else:
             print(f"⚠️ Unsupported data format for {table_name}.")
             return False
@@ -308,12 +303,8 @@ def store_generic_table(data: pd.DataFrame, table_name: str):
         return True
 
     except Exception as e:
-        session.rollback()
         print(f"❌ Error storing data in {table_name}: {e}")
         return False
-
-    finally:
-        session.close()
 
 
 def store_data(data: pd.DataFrame, table_name="cleaned_data"):
