@@ -2,16 +2,18 @@ from sklearn.utils import compute_class_weight
 from sklearn.metrics import classification_report
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, OneCycleLR
 import pandas as pd
 from transformers import BertTokenizer, BertForSequenceClassification, get_scheduler
 from transformers import RobertaTokenizer, RobertaForSequenceClassification, RobertaConfig
+from transformers.models.roberta.modeling_roberta import RobertaLayer
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, f1_score
 from torch.optim import AdamW
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import sys
+from sqlalchemy import inspect
 import os
 import shutil  
 import numpy as np
@@ -33,8 +35,7 @@ if torch.cuda.is_available():
     torch.cuda.empty_cache()
     torch.backends.cudnn.benchmark = True  # Optimize GPU performance
 
-# Load BERT tokenizer
-# tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+# Load RoBERTa tokenizer
 tokenizer = RobertaTokenizer.from_pretrained("roberta-base") # Load RoBERTa tokenizer
 
 engine = connect_to_db()  # Create a database engine
@@ -138,11 +139,14 @@ def load_data(data_source="cleaned"):
     """
 
     df_orig = pd.read_sql("SELECT text, label FROM reddit_posts", engine) # Load reddit_posts (original data)
+    df_relabeled = pd.read_sql("SELECT text, label FROM relabeled_data", engine) # Load relabeled_data (relabeled data)
     df_cleaned = pd.read_sql("SELECT text, label FROM cleaned_data", engine) # Load cleaned_data (cleaned data)
+    
 
     # Map labels to integers
     label_mapping = {"Negative": 0, "Neutral": 1, "Positive": 2}
     df_orig["label"] = df_orig["label"].map(label_mapping)
+    df_relabeled["label"] = df_relabeled["label"].map(label_mapping)
     df_cleaned["label"] = df_cleaned["label"].map(label_mapping)
 
     # Drop NaN values
@@ -153,20 +157,23 @@ def load_data(data_source="cleaned"):
     if data_source == "raw":
         df = df_orig # Use original data
         print(f"✅ Loaded {len(df)} raw records from reddit_posts.")
+    elif data_source == "relabeled":
+        df = df_relabeled # Use relabeled data
+        print(f"✅ Loaded {len(df)} relabeled records from relabeled_data.")
     elif data_source == "cleaned":
         df = df_cleaned # Use cleaned data
         print(f"✅ Loaded {len(df)} cleaned records from cleaned_data.")
-    elif data_source == "both":
+    elif data_source == "combined":   # Combine relabeled and cleaned data
         # Match sizes
-        min_size = min(len(df_orig), len(df_cleaned))
-        df_orig_sampled = df_orig.sample(n=min_size, random_state=42)
+        min_size = min(len(df_relabeled), len(df_cleaned))
+        df_relabeled_sampled = df_relabeled.sample(n=min_size, random_state=42)
         df_cleaned_sampled = df_cleaned.sample(n=min_size, random_state=42) # Sample to match size
-        df = pd.concat([df_orig_sampled, df_cleaned_sampled], ignore_index=True) # Combine the two DataFrames
+        df = pd.concat([df_relabeled_sampled, df_cleaned_sampled], ignore_index=True) # Combine the two DataFrames
         df = df.sample(frac=1, random_state=42).reset_index(drop=True) # Shuffle the combined DataFrame
-        print(f"✅ Loaded {len(df)} combined records (50% raw, 50% cleaned).")
+        print(f"✅ Loaded {len(df)} combined records (50% relabeled, 50% cleaned).")
     else:
-        raise ValueError(f"Invalid data_source '{data_source}'. Must be 'raw', 'cleaned', or 'both'.")
-    
+        raise ValueError(f"Invalid data_source '{data_source}'. Must be 'raw', 'relabeled', 'cleaned', or 'combined'.")
+
     # Store the loaded data in a dynamic table
     df_balanced, df_synthetic = balance_dataset(df)
 
@@ -213,10 +220,77 @@ def print_classification_report(labels, predictions, label_map={0: "Negative", 1
     print(classification_report(labels, predictions, target_names=label_map.values()))
 
 
-def train_model(data_source="both", dataset_type="balanced"):
+def table_exists(table_name: str) -> bool:
+    """
+    Checks whether a table exists in the connected database.
+    """
+    inspector = inspect(engine)
+    return table_name in inspector.get_table_names()
+
+
+def load_synthetic_table_from_db(table_name="synthetic_combined"):
+    """
+    Loads a pre-generated synthetic dataset directly from the database without additional processing.
+    """
+
+    if not table_exists(table_name):
+        raise ValueError(f"❌ Table '{table_name}' does not exist in the database. "
+                         f"Please generate synthetic data before training.")
+
+    print(f"📥 Loading synthetic data from table '{table_name}'...")
+    df_synthetic = pd.read_sql(f"SELECT text, label FROM {table_name}", engine)
+    
+    # Only apply label mapping if values are still in text
+    if df_synthetic["label"].dtype == object:
+        label_mapping = {"Negative": 0, "Neutral": 1, "Positive": 2}
+        df_synthetic["label"] = df_synthetic["label"].map(label_mapping)
+        
+    df_synthetic.dropna(inplace=True)
+    
+    print(f"✅ Loaded {len(df_synthetic)} synthetic records from '{table_name}'.")
+    return df_synthetic
+
+
+def load_balanced_table_from_db(table_name="balanced_combined"):
+    """
+    Loads a pre-balanced dataset directly from the database without additional processing.
+    """
+
+    if not table_exists(table_name):
+        raise ValueError(f"❌ Table '{table_name}' does not exist in the database. "
+                         f"Please run the pipeline or balance the dataset before training.")
+
+    print(f"📥 Loading pre-balanced data from table '{table_name}'...")
+    df_balanced = pd.read_sql(f"SELECT text, label FROM {table_name}", engine)
+    
+    # Only apply label mapping if values are still in text
+    if df_balanced["label"].dtype == object:
+        label_mapping = {"Negative": 0, "Neutral": 1, "Positive": 2}
+        df_balanced["label"] = df_balanced["label"].map(label_mapping)
+    
+    df_balanced.dropna(inplace=True)
+    
+    print(f"✅ Loaded {len(df_balanced)} records from '{table_name}'.")
+    return df_balanced
+
+
+def train_model(data_source="combined", dataset_type="balanced", use_prebalanced=True):
     """Fine-tunes RoBERTa for sentiment analysis with flexible dataset selection."""
 
-    df_balanced, df_synthetic, df = load_data(data_source) # Load data from the database
+    df_balanced, df_synthetic, df = None, None, None  # Initialize DataFrames
+
+    if use_prebalanced: 
+        if dataset_type == "balanced":
+            df_balanced = load_balanced_table_from_db(f"balanced_{data_source}")
+            df = df_balanced  # Use the balanced dataset as the main dataset
+        elif dataset_type == "synthetic":
+            df_synthetic = load_synthetic_table_from_db(f"synthetic_{data_source}")
+            df = df_synthetic  # Use the synthetic dataset as the main dataset
+        elif dataset_type == "unbalanced":
+            df = pd.read_sql(f"SELECT text, label FROM {data_source}", engine)    
+    else:
+        df_balanced, df_synthetic, df = load_data(data_source)
+
 
     if dataset_type == "unbalanced":
         selected_df = df
@@ -243,8 +317,8 @@ def train_model(data_source="both", dataset_type="balanced"):
     train_dataset = RedditDataset(train_texts.tolist(), train_labels.tolist(), tokenizer)
     val_dataset = RedditDataset(val_texts.tolist(), val_labels.tolist(), tokenizer)
 
-    batch_size = 32  # Reduce if hitting memory limit
-    accumulation_steps = 1  # Simulate larger batch sizes by accumulating gradients
+    batch_size = 24  # Reduce if hitting memory limit
+    accumulation_steps = 3  # Simulate larger batch sizes by accumulating gradients
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True) # Shuffle for training
     val_loader = DataLoader(val_dataset, batch_size=batch_size, pin_memory=True) # No shuffle for validation
     num_classes = 3  # Number of classes
@@ -252,8 +326,8 @@ def train_model(data_source="both", dataset_type="balanced"):
     config = RobertaConfig.from_pretrained(
         "roberta-base",
         num_labels=3,
-        hidden_dropout_prob=0.4,  
-        attention_probs_dropout_prob=0.4  
+        hidden_dropout_prob=0.1,
+        attention_probs_dropout_prob=0.1 
     )
     model = RobertaForSequenceClassification.from_pretrained("roberta-base", config=config)
     model.to(device)  # Move model to GPU if available
@@ -262,7 +336,7 @@ def train_model(data_source="both", dataset_type="balanced"):
     alpha = get_focal_alpha(train_labels, num_classes=num_classes)
     class_weights = get_class_weights(train_labels, num_classes=num_classes)
     cross_entropy_loss = nn.CrossEntropyLoss(weight=class_weights.to(device))  # CrossEntropyLoss with class weights
-    focal_loss = FocalLoss(alpha=alpha, gamma=2.0, device=device)
+    focal_loss = FocalLoss(alpha=alpha, gamma=1.5, device=device)
 
     # Group parameters for optimizer
     no_decay = {'bias', 'LayerNorm.weight'}  # Parameters that should not decay
@@ -270,7 +344,7 @@ def train_model(data_source="both", dataset_type="balanced"):
         {
             #"params": [param for name, param in model.named_parameters() if not any(nd in name for nd in no_decay) and param.requires_grad],
             "params": [],
-            "weight_decay": 0.02,   # Apply weight decay to all parameters except bias and LayerNorm.weight
+            "weight_decay": 0.01,   # Apply weight decay to all parameters except bias and LayerNorm.weight
         },
         {
             #"params": [param for name, param in model.named_parameters() if any(nd in name for nd in no_decay) and param.requires_grad],
@@ -288,13 +362,31 @@ def train_model(data_source="both", dataset_type="balanced"):
             optimizer_grouped_parameters[0]["params"].append(param)  # With decay
 
     optimizer = AdamW(optimizer_grouped_parameters, lr=2e-5) # Optimizer with grouped parameters
+    # optimizer = AdamW(optimizer_grouped_parameters)  
 
-    num_epochs = 10  # Number of epochs for training
+    num_epochs = 15  # Number of epochs for training
     total_steps = len(train_loader) * num_epochs // accumulation_steps  # Total training steps
     num_warmup_steps = int(0.1 * total_steps)  # Warmup steps for learning rate scheduler
     # lr_scheduler = get_scheduler("linear", optimizer=optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=total_steps)
-    lr_scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=1, verbose=True)
+    # lr_scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2, verbose=True)
+    lr_scheduler = OneCycleLR(
+        optimizer,
+        max_lr=2e-5,
+        steps_per_epoch=len(train_loader) // accumulation_steps,
+        epochs=num_epochs,
+        pct_start=0.1,  # 10% warm-up
+        anneal_strategy='cos',
+        div_factor=25.0,
+        final_div_factor=1e4,
+    )
     scaler = GradScaler(enabled=torch.cuda.is_available())
+
+    # ======= SWA Settings =======
+    from torch.optim.swa_utils import AveragedModel, SWALR, update_bn  # Import SWA utilities
+    # SWA is used to improve generalization by averaging weights over multiple epochs
+    swa_start = num_epochs - 3
+    swa_model = AveragedModel(model)
+    swa_scheduler = SWALR(optimizer, swa_lr=5e-6)
 
     # Save model in fixed directory (no timestamp)
     model_path = "Roberta_sentiment_model"
@@ -310,10 +402,16 @@ def train_model(data_source="both", dataset_type="balanced"):
 
     # num_layers_to_freeze = freeze_roberta_layers(model, num_layers_to_freeze=8)  # Freeze the first 8 layers of 12 layers of RoBERTa
     layers_to_freeze = 6  
-    layers_to_unfreeze = 3
     unfreeze_start_epoch = 2
     freeze_roberta_layers(model, num_layers_to_freeze=layers_to_freeze)  # Freeze the first 6 layers of 12 layers of RoBERTa
-    unfrozen_layers = set()
+    
+    num_roberta_layers = len(model.roberta.encoder.layer)
+    frozen_layers_indices = list(range(layers_to_freeze))  # [0, 1, 2, 3, 4, 5]
+    layers_to_unfreeze_order = list(reversed(range(num_roberta_layers - layers_to_freeze, num_roberta_layers)))  # [11, 10, 9, 8, 7, 6]
+
+    layers_to_unfreeze_per_epoch = 2  # Num of layers to Unfreeze per epoch
+    current_unfreeze_idx = 0  # Index of the next layer to unfreeze
+
 
     # Training loop
     for epoch in range(num_epochs):
@@ -328,13 +426,15 @@ def train_model(data_source="both", dataset_type="balanced"):
             print("📌 Using CrossEntropy Loss")
             print(f"⚖️ Class Weights: {class_weights}")
 
-        # ======= Unfreeze layers gradually =======
-        if epoch >= unfreeze_start_epoch:
-            current_unfreeze = (epoch - unfreeze_start_epoch) * layers_to_unfreeze
-            for i in range(current_unfreeze, current_unfreeze + layers_to_unfreeze):
-                if i < layers_to_freeze and i not in unfrozen_layers:
-                    unfreeze_roberta_layers(model, i)
-                    unfrozen_layers.add(i)
+        # ======= Unfreeze the last layers gradually =======
+        if (epoch + 1) >= unfreeze_start_epoch and (epoch + 1 - unfreeze_start_epoch) % 3 == 0:# Sum +1 because epoch starts in 0, and execute the condicional every 3 epochs
+            for _ in range(layers_to_unfreeze_per_epoch):
+                if current_unfreeze_idx < len(layers_to_unfreeze_order):
+                    layer_idx = layers_to_unfreeze_order[current_unfreeze_idx]
+                    unfreeze_roberta_layers(model, layer_idx)
+                    current_unfreeze_idx += 1
+                    for group in optimizer.param_groups:
+                        group['lr'] *= 0.8  # Reduce learning rate by 20% when unfreezing a layer
 
         # ======= Training =======
         model.train()
@@ -355,6 +455,7 @@ def train_model(data_source="both", dataset_type="balanced"):
             total_loss += loss.item()
 
             if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_loader): # Update weights every accumulation_steps
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
                 scaler.step(optimizer) # Update weights
                 scaler.update() # Update scaler
                 optimizer.zero_grad() # Reset gradients
@@ -391,10 +492,17 @@ def train_model(data_source="both", dataset_type="balanced"):
         val_f1 = f1_score(all_labels, all_preds, average="weighted") # Use weighted F1 score
         avg_val_loss = val_total_loss / len(val_loader)
         val_losses.append(avg_val_loss)
-        train_losses.append(avg_train_loss)
+
         print(f"✅ Validation Accuracy: {val_acc:.4f} | F1 Score (weighted): {val_f1:.4f} | 🧪 Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
         print_classification_report(all_labels, all_preds)  # print classification report every epoch
-        lr_scheduler.step(val_f1)  # Update learning rate based on validation F1 score
+
+        # ======= SWA Update =======
+        # Update SWA model parameters after swa_start epochs
+        if epoch >= swa_start:
+            swa_model.update_parameters(model)
+            swa_scheduler.step()
+        else:
+            lr_scheduler.step(val_f1)
 
         # ======= Early Stopping and save the model======
         if val_f1 > best_val_f1 or (val_f1 == best_val_f1 and avg_val_loss < best_val_loss):
@@ -411,13 +519,26 @@ def train_model(data_source="both", dataset_type="balanced"):
         torch.cuda.empty_cache()  # Free memory
 
     # === Save best model at the end of training ===
+    # if best_model_state_dict is not None:
+    #     model.load_state_dict(best_model_state_dict)  # Load best model state dict
+    #     if os.path.exists(model_path):
+    #         shutil.rmtree(model_path)
+    #     model.save_pretrained(model_path)  # Save model to disk
+    #     tokenizer.save_pretrained(model_path)  # Save tokenizer to disk
+    #     print(f"\n📦 Final best model saved to '{model_path}'")
+
     if best_model_state_dict is not None:
-        model.load_state_dict(best_model_state_dict)  # Load best model state dict
-        if os.path.exists(model_path):
-            shutil.rmtree(model_path)
-        model.save_pretrained(model_path)  # Save model to disk
-        tokenizer.save_pretrained(model_path)  # Save tokenizer to disk
-        print(f"\n📦 Final best model saved to '{model_path}'")
+        model.load_state_dict(best_model_state_dict)
+    
+    print("Updating BatchNorm for SWA model...")
+    update_bn(train_loader, swa_model)  
+
+    if os.path.exists(model_path): 
+        shutil.rmtree(model_path)
+    swa_model.module.save_pretrained(model_path)
+    tokenizer.save_pretrained(model_path)
+    print(f"\n📦 Final best SWA model saved to '{model_path}'")
+
 
     # Plot training vs validation loss
     plt.figure(figsize=(8, 6))
