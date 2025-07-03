@@ -14,6 +14,7 @@ from sentence_transformers import SentenceTransformer
 from src.utils.model_utils import analyze_data_distribution
 import gc
 import re
+import string
 
 
 # Download resources from nltk only when the script is executed directly
@@ -162,8 +163,20 @@ def is_valid_generated_text(text):
     if not re.search(r"[a-zA-Z]", text):
         return False
     
+    # Check if it contains only alphabetic characters and spaces, numbers and greetings with a length limit
+    if re.fullmatch(r"[A-Za-z\s]{1,10}", text):
+        return False
+    
     # Check if it not starts with a emoji or out of context character or hashtag
     if re.match(r"^[^\w\s]|^#", text):  # starts with non-alphanumeric character or space, or with #
+        return False
+    
+    # Detect repetition of words or noise such as “hahaha”, “nope”, etc.
+    if re.search(r"\b(?:nope|haha|lol|email|trump|stop it)\b", text.lower()):
+        return False
+    
+    # If it has less than 2 punctuation marks (low complexity), it is discarded.
+    if sum(1 for c in text if c in string.punctuation) < 2:
         return False
 
     return True
@@ -175,6 +188,29 @@ def generate_synthetic_samples(class_label, prompt, num_samples=100, max_length=
     tokenizer = AutoTokenizer.from_pretrained("gpt2") # Load GPT-2 tokenizer
     model = AutoModelForCausalLM.from_pretrained("gpt2").to(device)
     tokenizer.pad_token = tokenizer.eos_token  # GPT-2 has no pad token, so use EOS token
+
+    label_to_name = {0: "Negative", 1: "Neutral", 2: "Positive"}
+    class_name = label_to_name.get(class_label)
+
+    PROMPTS_BY_CLASS = {
+        "Negative": (
+            "Write a short, emotionally negative comment expressing dissatisfaction, frustration, or criticism. "
+            "Avoid offensive language. Example: 'I can't believe how bad this product turned out to be.'"
+        ),
+        "Neutral": (
+            "Write a short, emotionally neutral statement that contains neither positive nor negative sentiment, and avoids emotional or judgmental language. Example: "
+            "The package arrived at 3 PM." or "It was 18 degrees outside.'"
+            "Avoid any hint of positivity or negativity. Do not include opinions, emotions, or subjective language.'"
+        ),
+        "Positive": (
+            "Write a short, emotionally positive comment showing appreciation, happiness, or satisfaction. "
+            "Avoid exaggeration. Example: 'I really enjoyed using this app today.'"
+        )
+    }
+
+    prompt = PROMPTS_BY_CLASS.get(class_name)  # Get the prompt for the specified class label
+    if prompt is None:
+        raise ValueError(f"❌ No prompt defined for class label: {class_label} ({class_name})")
     
     generated_texts = []
     num_batches = (num_samples + batch_size - 1) // batch_size  # Calculate number of batches needed
@@ -193,12 +229,21 @@ def generate_synthetic_samples(class_label, prompt, num_samples=100, max_length=
             max_length=max_length,
             do_sample=True,
             pad_token_id=tokenizer.eos_token_id,
+            top_p=0.9,  # Use nucleus sampling
+            temperature=0.8,  # Control randomness
             num_return_sequences=1
         )
 
         decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        # generated_texts.extend([text.strip() for text in decoded])
-        cleaned = [text.strip() for text in decoded if is_valid_generated_text(text)]
+        cleaned = []
+        for text in decoded:
+            if prompt in text:
+                generated = text.split(prompt, 1)[-1].strip()  # remove the prompt
+            else:
+                generated = text.strip()
+    
+            if is_valid_generated_text(generated):
+                cleaned.append(generated)
 
         generated_texts.extend(cleaned[:num_samples - len(generated_texts)])  # Add only up to the required number of samples
         attempts += current_batch_size
