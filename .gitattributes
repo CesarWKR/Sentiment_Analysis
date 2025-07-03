@@ -1,3 +1,5 @@
 bert_sentiment_model/model.safetensors filter=lfs diff=lfs merge=lfs -text
 *.safetensors filter=lfs diff=lfs merge=lfs -text
 bert_sentiment_model_inference/model.safetensors filter=lfs diff=lfs merge=lfs -text
+Roberta_sentiment_model/*.safetensors filter=lfs diff=lfs merge=lfs -text
+Roberta_sentiment_model_inference/*.safetensors filter=lfs diff=lfs merge=lfs -text
