@@ -82,7 +82,7 @@ class FocalLoss(torch.nn.Module):   # Custom Focal Loss class
         if alpha is None:
             self.alpha = None  # No alpha specified, will be set in forward pass
         elif isinstance(alpha, (list, np.ndarray)):
-            self.alpha = torch.tensor(alpha, dtype=torch.float)
+           self.alpha = torch.tensor(alpha, dtype=torch.float)  # Convert list or ndarray to tensor
         elif isinstance(alpha, (int, float)):
             raise ValueError("alpha must be a list, ndarray or tensor with one value per class")
         elif isinstance(alpha, torch.Tensor):
@@ -208,10 +208,25 @@ def unfreeze_roberta_layers(model, layer_index: int):
     print(f"🔓 Unfrozen RoBERTa layer {layer_index}.") 
 
 
-def get_focal_alpha(labels, num_classes):
+def get_focal_alpha(labels, num_classes, neutral_boost=1.5):
+    """ Computes the alpha parameter for Focal Loss based on class distribution.
+    This is used to balance the loss function for imbalanced datasets.
+    Add a especial boost to the Neutral class (1) to make it more important.
+    
+    Args:
+        labels (list or np.array): List or array of labels.
+        num_classes (int): Number of classes in the dataset.
+        neutral_boost (float): Boost factor for the Neutral class (1).
+
+    Returns:
+        np.array: Normalized alpha values for each class."""
+    
     class_weights = compute_class_weight(class_weight="balanced", classes=np.arange(num_classes), y=labels)
-    alpha = class_weights / class_weights.sum()
-    # print(f"⚖️  Alpha for Focal Loss: {alpha}")
+    alpha = np.array(class_weights, dtype=np.float32)
+    if len(alpha) > 1:  # Apply boost to Neutral class
+        alpha[1] *= neutral_boost
+        alpha = alpha / alpha.sum()  # Normalize after boosting
+
     return alpha
 
 
@@ -333,10 +348,10 @@ def train_model(data_source="combined", dataset_type="balanced", use_prebalanced
     model.to(device)  # Move model to GPU if available
 
     # ======= Loss Function: You can switch between FocalLoss and CrossEntropy =======
-    alpha = get_focal_alpha(train_labels, num_classes=num_classes)
+    alpha = get_focal_alpha(train_labels, num_classes=num_classes, neutral_boost=1.5)  # Compute alpha for Focal Loss
     class_weights = get_class_weights(train_labels, num_classes=num_classes)
     cross_entropy_loss = nn.CrossEntropyLoss(weight=class_weights.to(device))  # CrossEntropyLoss with class weights
-    focal_loss = FocalLoss(alpha=alpha, gamma=1.5, device=device)
+    focal_loss = FocalLoss(alpha=alpha, gamma=2.0, device=device)
 
     # Group parameters for optimizer
     no_decay = {'bias', 'LayerNorm.weight'}  # Parameters that should not decay
@@ -362,13 +377,10 @@ def train_model(data_source="combined", dataset_type="balanced", use_prebalanced
             optimizer_grouped_parameters[0]["params"].append(param)  # With decay
 
     optimizer = AdamW(optimizer_grouped_parameters, lr=2e-5) # Optimizer with grouped parameters
-    # optimizer = AdamW(optimizer_grouped_parameters)  
 
+    # ======= Learning Rate Scheduler =======
+    # OneCycleLR is a learning rate scheduler that adjusts the learning rate dynamically during training
     num_epochs = 15  # Number of epochs for training
-    total_steps = len(train_loader) * num_epochs // accumulation_steps  # Total training steps
-    num_warmup_steps = int(0.1 * total_steps)  # Warmup steps for learning rate scheduler
-    # lr_scheduler = get_scheduler("linear", optimizer=optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=total_steps)
-    # lr_scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2, verbose=True)
     lr_scheduler = OneCycleLR(
         optimizer,
         max_lr=2e-5,
@@ -376,15 +388,15 @@ def train_model(data_source="combined", dataset_type="balanced", use_prebalanced
         epochs=num_epochs,
         pct_start=0.1,  # 10% warm-up
         anneal_strategy='cos',
-        div_factor=25.0,
-        final_div_factor=1e4,
+        div_factor=25.0,  # Initial learning rate divided by this factor
+        final_div_factor=1e4,  # Final learning rate divided by this factor
     )
     scaler = GradScaler(enabled=torch.cuda.is_available())
 
     # ======= SWA Settings =======
     from torch.optim.swa_utils import AveragedModel, SWALR, update_bn  # Import SWA utilities
     # SWA is used to improve generalization by averaging weights over multiple epochs
-    swa_start = num_epochs - 3
+    swa_start = num_epochs - 4
     swa_model = AveragedModel(model)
     swa_scheduler = SWALR(optimizer, swa_lr=5e-6)
 
@@ -398,16 +410,15 @@ def train_model(data_source="combined", dataset_type="balanced", use_prebalanced
     train_losses, val_losses = [], []  # To track losses for plotting
     best_model_state_dict = None  # To save the best model state dict
     best_val_loss = float("inf")
-    use_focal = False  # Set to True to use Focal Loss, False for CrossEntropy
+    use_focal = True  # Set to True to use Focal Loss, False for CrossEntropy
 
-    # num_layers_to_freeze = freeze_roberta_layers(model, num_layers_to_freeze=8)  # Freeze the first 8 layers of 12 layers of RoBERTa
     layers_to_freeze = 6  
     unfreeze_start_epoch = 2
+    unfreeze_every_n_epochs = 2  # Unfreeze every 2 epochs after the first one
     freeze_roberta_layers(model, num_layers_to_freeze=layers_to_freeze)  # Freeze the first 6 layers of 12 layers of RoBERTa
-    
+
     num_roberta_layers = len(model.roberta.encoder.layer)
-    frozen_layers_indices = list(range(layers_to_freeze))  # [0, 1, 2, 3, 4, 5]
-    layers_to_unfreeze_order = list(reversed(range(num_roberta_layers - layers_to_freeze, num_roberta_layers)))  # [11, 10, 9, 8, 7, 6]
+    layers_to_unfreeze_order = list(reversed(range(num_roberta_layers - layers_to_freeze, num_roberta_layers)))  # [12, 11, 10, 9, 8, 7] for RoBERTa base
 
     layers_to_unfreeze_per_epoch = 2  # Num of layers to Unfreeze per epoch
     current_unfreeze_idx = 0  # Index of the next layer to unfreeze
@@ -427,7 +438,7 @@ def train_model(data_source="combined", dataset_type="balanced", use_prebalanced
             print(f"⚖️ Class Weights: {class_weights}")
 
         # ======= Unfreeze the last layers gradually =======
-        if (epoch + 1) >= unfreeze_start_epoch and (epoch + 1 - unfreeze_start_epoch) % 3 == 0:# Sum +1 because epoch starts in 0, and execute the condicional every 3 epochs
+        if (epoch + 1) >= unfreeze_start_epoch and (epoch + 1 - unfreeze_start_epoch) % unfreeze_every_n_epochs == 0:# Sum +1 because epoch starts in 0, and execute the condicional every n epochs
             for _ in range(layers_to_unfreeze_per_epoch):
                 if current_unfreeze_idx < len(layers_to_unfreeze_order):
                     layer_idx = layers_to_unfreeze_order[current_unfreeze_idx]
@@ -435,6 +446,10 @@ def train_model(data_source="combined", dataset_type="balanced", use_prebalanced
                     current_unfreeze_idx += 1
                     for group in optimizer.param_groups:
                         group['lr'] *= 0.8  # Reduce learning rate by 20% when unfreezing a layer
+
+        if epoch > num_epochs - 4:
+            model.config.hidden_dropout_prob = 0.05
+            model.config.attention_probs_dropout_prob = 0.05
 
         # ======= Training =======
         model.train()
@@ -459,8 +474,6 @@ def train_model(data_source="combined", dataset_type="balanced", use_prebalanced
                 scaler.step(optimizer) # Update weights
                 scaler.update() # Update scaler
                 optimizer.zero_grad() # Reset gradients
-                # lr_scheduler.step() # Update learning rate
-                # lr_scheduler.step(val_f1)
 
             loop.set_postfix(loss=loss.item()) # Update progress bar postfix
 
@@ -502,7 +515,7 @@ def train_model(data_source="combined", dataset_type="balanced", use_prebalanced
             swa_model.update_parameters(model)
             swa_scheduler.step()
         else:
-            lr_scheduler.step(val_f1)
+            lr_scheduler.step() # Update learning rate scheduler for normal training and coincide with OneCycleLR
 
         # ======= Early Stopping and save the model======
         if val_f1 > best_val_f1 or (val_f1 == best_val_f1 and avg_val_loss < best_val_loss):
@@ -519,14 +532,6 @@ def train_model(data_source="combined", dataset_type="balanced", use_prebalanced
         torch.cuda.empty_cache()  # Free memory
 
     # === Save best model at the end of training ===
-    # if best_model_state_dict is not None:
-    #     model.load_state_dict(best_model_state_dict)  # Load best model state dict
-    #     if os.path.exists(model_path):
-    #         shutil.rmtree(model_path)
-    #     model.save_pretrained(model_path)  # Save model to disk
-    #     tokenizer.save_pretrained(model_path)  # Save tokenizer to disk
-    #     print(f"\n📦 Final best model saved to '{model_path}'")
-
     if best_model_state_dict is not None:
         model.load_state_dict(best_model_state_dict)
     
