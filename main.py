@@ -109,7 +109,7 @@ def main():
         logging.info(f"✅ Found existing model: {latest_model_path}. Skipping training.")
     elif cleaned_data_exists(): # Check if cleaned data exists in the database
         logging.info("🧠 No existing model found. Fine-tuning RoBERTa model...")
-        train_model(data_source="both", dataset_type="balanced") # Choose the data source for training (raw, cleaned, or both) and the dataset type (balanced or unbalanced)
+        train_model(data_source="combined", dataset_type="balanced", use_prebalanced=False) # Choose the data source for training (raw, relabeled, cleaned, or combined) and the dataset type (balanced, synthetic or unbalanced). use_prebalanced indicates if you already have a prebalanced dataset in the database, else it will create a new one.
         update_latest_model()
         logging.info("✅ RoBERTa model trained and latest model updated.")
     else:
