@@ -357,6 +357,7 @@ def save_validation_data(val_texts, val_labels, table_name="validation_data"):  
 
         # Create a DataFrame for validation data
         val_df = pd.DataFrame({
+            "id": range(len(val_texts)),
             "text": val_texts, 
             "label": val_labels, # Numerical labels
             'label_name': val_labels_str  # Add a new column for label names
@@ -406,11 +407,11 @@ def store_results_in_db(engine, results_to_store): # Store validation results in
             print("🆕 Table 'validation_results' is empty. Proceeding with insert.")
 
         # Insert predictions into the database
-        for text_val, prediction in results_to_store: # Iterate over the results to store
+        for idx, text_val, prediction in results_to_store: # Iterate over the results to store
             conn.execute(text("""
-                INSERT INTO validation_results (text, predicted_label) 
-                VALUES (:text, :pred)
-            """), {"text": text_val, "pred": prediction})
+                INSERT INTO validation_results (id, text, predicted_label) 
+                VALUES (:id, :text, :pred)
+            """), {"id": idx, "text": text_val, "pred": prediction})
 
     print("✅ Validation results stored in database.")
 
