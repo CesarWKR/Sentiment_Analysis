@@ -126,6 +126,20 @@ services:
           devices:
             - capabilities: [gpu]
 
+
+# FastAPI application for inference
+  inference_api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    environment:
+      MODEL_DIR: /app/Roberta_sentiment_model
+
+
 volumes:
   postgres_data:
   pgadmin_data:
