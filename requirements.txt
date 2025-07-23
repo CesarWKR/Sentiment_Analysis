@@ -204,3 +204,9 @@ websocket-client==1.8.0
 widgetsnbextension==4.0.13
 xxhash==3.5.0
 yarl==1.18.3
+fastapi==0.116.1
+starlette==0.47.2
+pydantic==2.11.7
+annotated-types==0.7.0
+typing-inspection==0.4.1
+pydantic-core==2.33.2
