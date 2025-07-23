@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Sentiment Analysis</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+
+<body>
+  <h1>🔍 Sentiment Analysis</h1>
+  <form id="sentiment-form">
+    <label for="text">Enter your text:</label><br>
+    <textarea id="text" name="text" required></textarea><br>
+    <button type="submit">Analyze</button>
+  </form>
+
+  <div id="result" class="result" style="display: none;"></div>
+  
+  <div id="confidence-bars" class="confidence-bars">
+    <div class="confidence-group">
+      <span>Negative</span>
+      <div class="progress-bar">
+        <div id="bar-negative" class="bar-fill negative"></div>
+      </div>
+    </div>
+    <div class="confidence-group">
+      <span>Neutral</span>
+      <div class="progress-bar">
+        <div id="bar-neutral" class="bar-fill neutral"></div>
+      </div>
+    </div>
+    <div class="confidence-group">
+      <span>Positive</span>
+      <div class="progress-bar">
+        <div id="bar-positive" class="bar-fill positive"></div>
+      </div>
+    </div>
+  </div>
+  
+  <div id="error-message" class="error-message" style="display: none;"></div>
+
+
+  <script src="/static/js/script.js" defer></script>  <!-- Defer don't block rendering, download it in background and execute it after parsing the HTML -->
+</body>
+</html>
