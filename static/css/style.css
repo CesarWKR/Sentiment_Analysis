@@ -1,26 +1,113 @@
 body {
-  font-family: Arial, sans-serif;
-  max-width: 600px;
-  margin: auto;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  /* max-width: 600px; */
+  background-color: #f8f9fa; /* Bootstrap's light background color */
+  margin: 0;
+  padding: 0;
+  min-height: 700px;
+  font-size: 1.1rem; /* Slightly larger font size for better readability */
+}
+
+.page-container {
+  max-width: 700px; /* Limit the width of the page */
+  margin: 0 auto; /* Center the page */
+  padding: 0.5px 0.5px; /* Add some padding around the content */
+  height: 100%;
+  display: flex;
+  max-height: 800px; 
+}
+
+main {
+  margin-top: 20px;
+  background: white;
   padding: 2rem;
-  background: #f8f9fa; 
+  border-radius: 12px;
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 700px; /* Limit the width of the main content */
+}
+
+header h1 {
+  text-align: center;
+  color: #007bff; /* Bootstrap's primary text color */
+  padding: 5px;
+  margin-bottom: 10px;
+  margin-top: 1px;
+  border-radius: 8px;
+  font-size: 3rem;
+  background-color: #f1c40f;
+}
+
+label {
+  display: block;
+  margin-bottom: 10px;
+  font-weight: bold;
+  color: #343a40; /* Bootstrap's dark text color */
+}
+
+.textarea-container {
+  position: relative;
+  width: 100%;
+  margin: 0 auto;
+  max-width: 700px; /* Limit the width of the textarea container */
 }
 
 textarea {
   width: 100%;
-  height: 120px;
-  padding: 0.5rem;
+  height: 110px;
+  padding: 10px;
+  font-size: 18px;
+  border: 1px solid #ccc; /* Bootstrap's border color */
+  border-radius: 6px;
+  padding-bottom: 2rem; /* Add space for character counter */
+  box-sizing: border-box; /* Include padding in element's total width/height */
+  resize: none; /* Disable resizing */
+}
+
+.char-counter {
+  position: absolute;
+  display: block;
+  text-align: right;
+  bottom: 8px;
+  right: 12px;
+  color: #6c757d; /* Bootstrap's text-muted color */
+  font-size: 0.85rem; /* Smaller font size */
+  pointer-events: none; /* Prevent interaction with the counter */
+}
+
+.blink {
+  animation: blink-animation 1s steps(2, start) infinite;
+}
+
+@keyframes blink-animation {
+  to {
+    visibility: hidden;
+  }
+}
+
+.shake {
+  animation: shake-animation 0.3s ease-in-out 0s 2;
+}
+
+@keyframes shake-animation {
+  0% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  50% { transform: translateX(4px); }
+  75% { transform: translateX(-4px); }
+  100% { transform: translateX(0); }
 }
 
 button {
-  margin-top: 1rem;
-  padding: 0.5rem 1rem;
-  font-size: 1rem;
-  background-color: #007bff;
+  display: block;
+  margin: 20px auto;
+  background-color: #007bff; /* Bootstrap's primary button color */
   color: white;
+  padding: 10px 24px;
+  font-size: 20px;
   border: none;
-  border-radius: 15px;
+  border-radius: 6px;
   cursor: pointer;
+  transition: background-color 0.3s ease;
 }
 
 .result {
@@ -29,6 +116,30 @@ button {
   margin-top: 20px;
   border-left: 5px solid #007bff;
   border-radius: 5px;
+}
+
+button:hover {
+  background-color: #0056b3; /* Darker shade on hover */
+}
+
+.result-label {
+  font-weight: bold;
+  color: #343a40; /* Bootstrap's dark text color */
+  margin-top: 20px;
+}
+
+.result-bar {
+  background-color: #e9ecef;
+  padding: 10px;
+  border-radius: 10px;
+  margin-top: 5px;
+  height: 20px;
+  overflow: hidden; /* Ensure the bar does not overflow its container */
+}
+
+.bar-inner {
+  height: 100%;
+  transition: width 0.5s ease-in-out; /* Smooth transition for width changes */
 }
 
 .emoji {
@@ -45,11 +156,14 @@ button {
 }
 
 .progress-bar {
+  position: relative;
   background-color: #eee;
   border-radius: 20px;
   height: 20px;
   width: 100%;
-  margin-bottom: 10px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  margin-top: 3px;
   overflow: hidden;  /* Ensure the bar does not overflow its container */
 }
 
@@ -59,6 +173,7 @@ button {
   transition: width 0.8s ease-in-out;  /* Smooth transition for width changes */
   border-radius: 20px;
   background-color: #5b9bd5;
+  position: relative;
 }
 
 .bar-fill.negative {
@@ -75,7 +190,51 @@ button {
 
 .bar-fill.active {
   box-shadow: 0 0 8px 2px rgba(0,0,0,0.3);
-  border: 2px solid #00000030;
+  border: 2px solid black; /* Highlight active bar with a black border */
 }
 
+.bar-label {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translate(0, -50%);
+  display: none;
+  font-size: 0.85rem;
+  font-weight: bold;
+  margin-left: 8px;
+  vertical-align: middle;
+  color: #333;
+  z-index: 10; /* Ensure label is above the bar */
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  max-height: 800px;
+}
+
+.page-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 80vh;
+}
+
+main {
+  flex: 1;  /* Allow main to grow and fill available space */
+}
+
+footer {
+  text-align: center;
+  padding: 1px 1rem 1px 1rem; /* top, right, bottom, left */
+  background-color: whitesmoke;
+  font-size: 18px; 
+  width: 723px;
+  margin: 20px auto 10px auto; /* Center footer and add margin */
+  margin-left: 4px;
+  margin-top: 5px;
+  border-radius: 15px;
+  font-family: 'Gill Sans', 'Gill Sans MT', Calibri, 'Trebuchet MS', sans-serif;
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);  
+}
 
