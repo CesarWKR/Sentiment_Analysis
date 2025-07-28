@@ -3,44 +3,71 @@
 
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Sentiment Analysis</title>
   <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 
 <body>
-  <h1>🔍 Sentiment Analysis</h1>
-  <form id="sentiment-form">
-    <label for="text">Enter your text:</label><br>
-    <textarea id="text" name="text" required></textarea><br>
-    <button type="submit">Analyze</button>
-  </form>
+  <div class="page-container">
+    <main>
+      <header>
+        <strong><h1>🔍 Sentiment Analysis</h1></strong>
+      </header>
 
-  <div id="result" class="result" style="display: none;"></div>
-  
-  <div id="confidence-bars" class="confidence-bars">
-    <div class="confidence-group">
-      <span>Negative</span>
-      <div class="progress-bar">
-        <div id="bar-negative" class="bar-fill negative"></div>
-      </div>
-    </div>
-    <div class="confidence-group">
-      <span>Neutral</span>
-      <div class="progress-bar">
-        <div id="bar-neutral" class="bar-fill neutral"></div>
-      </div>
-    </div>
-    <div class="confidence-group">
-      <span>Positive</span>
-      <div class="progress-bar">
-        <div id="bar-positive" class="bar-fill positive"></div>
-      </div>
-    </div>
+      <section>
+        <form id="sentiment-form">
+          <p>Analyze the sentiment of your text using this AI-powered tool.</p>
+
+          <label for="text">Enter your text:</label>
+
+          <div class="textarea-container">
+            <textarea id="text" name="text" maxlength="256" required></textarea>
+            <span id="char-count" class="char-counter">0 / 256</span>
+          </div>
+
+          <button type="submit">Analyze</button>
+        </form>
+      </section>
+
+      <section id="result-section" class="result-section">
+        <div id="result" class="result" style="display: none;"></div>
+
+        <div id="confidence-bars" class="confidence-bars">
+          <div class="confidence-group">
+            <span>Negative</span>
+            <div class="progress-bar">
+              <div id="bar-negative" class="bar-fill negative"></div>
+              <span id="label-negative" class="bar-label"></span>
+            </div>
+          </div>
+          <div class="confidence-group">
+            <span>Neutral</span>
+            <div class="progress-bar">
+              <div id="bar-neutral" class="bar-fill neutral"></div>
+              <span id="label-neutral" class="bar-label"></span>
+            </div>
+          </div>
+          <div class="confidence-group">
+            <span>Positive</span>
+            <div class="progress-bar">
+              <div id="bar-positive" class="bar-fill positive"></div>
+              <span id="label-positive" class="bar-label"></span>
+            </div>
+          </div>
+        </div>
+
+        <div id="error-message" class="error-message" style="display: none;"></div>
+      </section>
+    </main>
+    <footer>
+      <p>Made by CesarWKR 
+        <br><a href="https://github.com/CesarWKR/Sentiment_Analysis"> Repository Link</a>
+      </p>
+      <p>All rights reserved &copy; 2025</p>
+    </footer>
   </div>
   
-  <div id="error-message" class="error-message" style="display: none;"></div>
-
-
   <script src="/static/js/script.js" defer></script>  <!-- Defer don't block rendering, download it in background and execute it after parsing the HTML -->
 </body>
 </html>
