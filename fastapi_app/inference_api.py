@@ -40,13 +40,6 @@ app = FastAPI(title="Sentiment Analysis API", description="RoBERTa model for sen
 app.mount("/static", StaticFiles(directory="static"), name="static")   # Mount static files for serving CSS/JS
 templates = Jinja2Templates(directory="templates")   # Directory for HTML templates
 
-# def sanitize_text(text: str) -> str:
-#     """Basic sanitization and normalization."""
-#     text = text.strip().lower()
-#     text = re.sub(r"[\n\r]+", " ", text)
-#     text = re.sub(r"[“”‘’]", "\"", text)
-#     text = re.sub(r"[^\w\s.,!?¡¿:;'\-()\"]", "", text)
-#     return text
 
 def predict_sentiment(text: str) -> dict:
     """Predict sentiment from raw text."""
