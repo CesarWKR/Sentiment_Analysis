@@ -544,19 +544,7 @@ def train_model(data_source="combined", dataset_type="balanced", use_prebalanced
     tokenizer.save_pretrained(model_path)
     print(f"\n📦 Final best SWA model saved to '{model_path}'")
 
-
-    # Plot training vs validation loss
-    plt.figure(figsize=(8, 6))
-    plt.plot(train_losses, label="Training Loss", color="blue")
-    plt.plot(val_losses, label="Validation Loss", color="orange")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Training vs Validation Loss (Overfitting Diagnosis)")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()  
-    plt.show()
-
+    print("Training complete.")
     return model, val_loader  # Returning model and validation loader for evaluation
 
 if __name__ == "__main__":
